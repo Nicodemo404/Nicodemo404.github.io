@@ -1,0 +1,624 @@
+/* Lost Memories — phone app.
+ *
+ * Data comes from the PCs: each one writes snapshot-<pc>.json into Drive/SeriesTracker/data, and a
+ * small Google Apps Script (the "bridge", in the user's own Google account) hands the newest one to
+ * this app. Changes made here (+/−, "watched up to here") go into state-phone.json, which the PCs
+ * merge like any other machine's state. When served from the PC itself (/m/ on 127.0.0.1) the app
+ * reads the PC's live snapshot directly, for previewing.
+ */
+'use strict';
+const VERSION = '1.0.0';
+const $ = s => document.querySelector(s);
+const fa = n => (n ?? '').toLocaleString('fa-IR');
+const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
+const now = () => Date.now() / 1000;
+// served by the PC app at /m/: read the PC's live data ("?bridge" forces the real bridge, for testing)
+const PC_PREVIEW = /^(127\.0\.0\.1|localhost)$/.test(location.hostname) && location.pathname.startsWith('/m') &&
+  !new URLSearchParams(location.search).has('bridge');
+
+// ------------------------------------------------------------------ storage
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem('lm.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('lm.' + k, JSON.stringify(v)); } catch { /* private mode */ } },
+};
+// the snapshot is ~2 MB: IndexedDB, not localStorage
+const IDB = {
+  db: null,
+  async open() {
+    if (this.db) return this.db;
+    this.db = await new Promise((ok, bad) => {
+      const r = indexedDB.open('lost-memories', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('kv');
+      r.onsuccess = () => ok(r.result);
+      r.onerror = () => bad(r.error);
+    });
+    return this.db;
+  },
+  async get(k) {
+    try {
+      const db = await this.open();
+      return await new Promise(ok => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => ok(q.result); q.onerror = () => ok(undefined); });
+    } catch { return undefined; }
+  },
+  async set(k, v) {
+    try {
+      const db = await this.open();
+      await new Promise(ok => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = ok; t.onerror = ok; });
+    } catch { /* storage unavailable: the app still works for this session */ }
+  },
+};
+
+// ------------------------------------------------------------------ state
+let snap = null;                                  // newest PC snapshot
+let snapTime = 0;                                 // bridge: Drive modified time of that snapshot (ms)
+let phone = { machine: 'phone', overrides: {} };  // changes made on the phone
+let live = LS.get('live', { al: {}, tm: {}, at: 0 });   // fresh airing data fetched by the phone
+let view = 'shows', filter = 'all', detail = null;
+let shows = [];                                   // derived from snap + phone + live
+
+const conn = () => LS.get('conn', { url: '', key: '' });
+
+// ------------------------------------------------------------------ helpers
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+    else if (k === 'class') el.className = v;
+    else el.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) el.append(k.nodeType ? k : String(k));
+  return el;
+}
+const norm = t => String(t || '').toLowerCase().replace(/['’`]/g, '').replace(/[\s._\-:!?,()\[\]]+/g, ' ').trim();
+const initials = t => (t || '?').split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+const rtf = new Intl.RelativeTimeFormat('fa', { numeric: 'auto' });
+function relTime(ts) {
+  const d = ts - now(), a = Math.abs(d);
+  if (a < 3600) return rtf.format(Math.round(d / 60), 'minute');
+  if (a < 86400) return rtf.format(Math.round(d / 3600), 'hour');
+  if (a < 86400 * 45) return rtf.format(Math.round(d / 86400), 'day');
+  return rtf.format(Math.round(d / (86400 * 30)), 'month');
+}
+const date = ts => ts ? new Date(ts * 1000).toLocaleDateString('fa-IR', { month: 'long', day: 'numeric' }) : '';
+const bytes = b => !b ? '' : b >= 2 ** 30 ? fa(+(b / 2 ** 30).toFixed(1)) + ' گیگ' : fa(Math.round(b / 2 ** 20)) + ' مگ';
+function coverEl(url, title, cls) {
+  const ph = () => h('div', { class: cls }, title === '🎬' ? '🎬' : initials(title));
+  if (!url) return ph();
+  return h('img', { class: cls, src: url, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer', onerror: e => e.target.replaceWith(ph()) });
+}
+let toastTimer;
+function toast(text) {
+  const t = $('#toast');
+  t.textContent = text; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2600);
+}
+function srcLabel(src) {
+  const s = (snap && snap.sources || []).find(x => x.source === src);
+  if (!s) return src || '';
+  if (s.kind === 'pc') return '🖥 سیستم ' + src;
+  if (s.kind === 'adm') return '📱 ' + src;
+  if (s.kind === 'telegram') return '✈️ ' + src;
+  return src;
+}
+const srcKind = src => ((snap && snap.sources || []).find(x => x.source === src) || {}).kind;
+
+// ------------------------------------------------------------------ deriving the view
+// Applies the phone's own corrections and the live airing data on top of the PC snapshot, and
+// recomputes "new episodes" the same way the PC does.
+function derive() {
+  if (!snap) { shows = []; return; }
+  const written = snap.written_at || 0;
+  shows = snap.shows.map(s => {
+    const o = phone.overrides[s.sid];
+    let pos = { idx: s.pos.idx, episode: s.pos.episode }, manual = s.override, mine = false;
+    if (o && (o.updated || 0) > written) {           // changed on the phone after the PC's snapshot
+      mine = true;
+      if (o.cleared) {
+        const top = (s.source_progress || [])[0];
+        if (top) pos = { idx: top.idx, episode: top.episode };
+        manual = false;
+      } else { pos = { idx: o.idx, episode: o.episode }; manual = true; }
+    }
+    const seasons = s.seasons.map(se => liveSeason(s, se));
+    let fresh = 0, upcoming = null;
+    for (const se of seasons) {
+      if (se.idx < pos.idx) continue;
+      fresh += se.idx === pos.idx ? Math.max(0, (se.aired || 0) - pos.episode) : (se.aired || 0);
+      if (se.next && !upcoming) upcoming = { label: se.label, episode: se.next.episode, at: se.next.at };
+    }
+    const last = seasons[seasons.length - 1];
+    const airing = !!upcoming || seasons.some(se => se.status === 'RELEASING' || se.status === 'NOT_YET_RELEASED') ||
+      ['Running', 'To Be Determined', 'In Development'].includes(s.show_status);
+    const state = fresh ? (airing ? 'new' : 'behind') : airing ? 'waiting' : (last && last.status === 'FINISHED') ? 'done' : 'unknown';
+    const cur = seasons.find(se => se.idx === pos.idx);
+    return { ...s, seasons, pos: { ...pos, label: cur ? cur.label : 'S' + pos.idx, season_episodes: cur && cur.episodes, season_aired: cur && cur.aired },
+      override: manual, mine, new: fresh, upcoming, state,
+      _hay: norm([s.title, s.alt, s.native, ...(s.names || []), ...(s.episodes_owned || []).map(e => e.file)].join(' | ')) };
+  });
+  const order = { new: 0, behind: 1, waiting: 2, unknown: 3, done: 4 };
+  shows.sort((a, b) => order[a.state] - order[b.state] || (b.active || 0) - (a.active || 0));
+}
+
+function liveSeason(s, se) {
+  const [prov, id] = s.sid.split(':');
+  if (prov === 'al' && se.media_id && live.al[se.media_id]) {
+    const L = live.al[se.media_id];
+    const aired = L.status === 'FINISHED' ? (L.episodes || se.aired) : L.next ? L.next.episode - 1 : se.aired;
+    return { ...se, status: L.status || se.status, episodes: L.episodes || se.episodes, aired: Math.max(aired, 0), next: L.next || null };
+  }
+  if (prov === 'tm' && live.tm[id]) {
+    const L = live.tm[id];
+    const out = { ...se };
+    if (L.prev && L.prev.season === se.season_num) out.aired = Math.max(se.aired || 0, L.prev.number);
+    if (L.next && L.next.season === se.season_num) { out.next = { episode: L.next.number, at: L.next.at }; out.status = 'RELEASING'; }
+    else if (out.next && out.next.at < now()) out.next = null;
+    return out;
+  }
+  if (se.next && se.next.at < now() - 3600) {       // the PC's info is older than the episode: count it as out
+    return { ...se, aired: Math.max(se.aired || 0, se.next.episode), next: null };
+  }
+  return se;
+}
+
+// ------------------------------------------------------------------ sync
+async function bridge(action, extra) {
+  const c = conn();
+  const r = await fetch(c.url, { method: 'POST', redirect: 'follow', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ key: c.key, action, ...extra }) });
+  if (!r.ok) throw new Error('خطای اتصال (' + r.status + ')');
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error === 'unauthorized' ? 'رمز اشتباهه' : (j.error || 'خطا'));
+  return j;
+}
+
+// the bridge sends the snapshot gzip-compressed and base64-encoded (about ten times smaller)
+async function gunzipJson(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return JSON.parse(await new Response(stream).text());
+}
+
+let syncing = false;
+async function sync(silent) {
+  if (syncing) return;
+  syncing = true;
+  $('#syncBtn').classList.add('spin');
+  try {
+    if (PC_PREVIEW) {
+      snap = await (await fetch('/api/snapshot')).json();
+      snapTime = Date.now();
+    } else {
+      const c = conn();
+      if (!c.url || !c.key) { showBanner('برای دیدن اطلاعات، توی «بیشتر» آدرس پل و رمز رو وارد کن.', true); return; }
+      const j = await bridge('load', { have: snapTime || '', gz: 'DecompressionStream' in window ? 1 : 0 });
+      const fresh = j.snapshot_gz ? await gunzipJson(j.snapshot_gz) : j.snapshot;
+      if (fresh) { snap = fresh; snapTime = j.snapshot_time; await IDB.set('snap', { snap, snapTime }); }
+      if (j.phone && j.phone.overrides) mergePhone(j.phone);
+    }
+    LS.set('lastSync', now());
+    if (LS.get('dirty', false)) await push();
+    derive(); render();
+    if (!silent) toast('به‌روز شد');
+    checkLive();
+  } catch (e) {
+    showBanner('همگام‌سازی نشد: ' + (e.message || e) + ' (اطلاعات قبلی نشون داده می‌شه)', true);
+  } finally {
+    syncing = false;
+    $('#syncBtn').classList.remove('spin');
+    updateSyncInfo();
+  }
+}
+
+function mergePhone(remote) {
+  for (const [sid, o] of Object.entries(remote.overrides || {})) {
+    const mine = phone.overrides[sid];
+    if (!mine || (o.updated || 0) > (mine.updated || 0)) phone.overrides[sid] = o;
+  }
+  LS.set('phone', phone);
+}
+
+let pushTimer;
+function queuePush() {
+  LS.set('dirty', true);
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(() => push().catch(() => {}), 1500);
+}
+async function push() {
+  if (PC_PREVIEW) { LS.set('dirty', false); return; }     // preview: changes stay in this browser
+  const c = conn();
+  if (!c.url || !c.key) return;
+  phone.updated = now();
+  await bridge('save_state', { state: phone });
+  LS.set('dirty', false);
+  updateSyncInfo();
+}
+
+function setOverride(s, idx, episode) {
+  phone.overrides[s.sid] = { idx, episode: Math.max(0, episode), updated: now() };
+  LS.set('phone', phone);
+  queuePush(); derive(); render(); if (detail) renderDetail();
+}
+function clearOverride(s) {
+  phone.overrides[s.sid] = { cleared: true, updated: now() };
+  LS.set('phone', phone);
+  queuePush(); derive(); render(); if (detail) renderDetail();
+}
+
+function updateSyncInfo() {
+  const t = LS.get('lastSync', 0);
+  const parts = [];
+  if (snap) parts.push(`از سیستم ${snap.machine} · ${relTime(snap.written_at)}`);
+  if (LS.get('dirty', false)) parts.push('تغییرات هنوز فرستاده نشده');
+  else if (t) parts.push('همگام ' + relTime(t));
+  $('#syncInfo').textContent = parts.join(' · ') || 'هنوز همگام نشده';
+}
+
+function showBanner(text, warn) {
+  const b = $('#banner');
+  b.className = 'banner' + (warn ? ' warn' : '');
+  b.replaceChildren(text, h('button', { onclick: () => { b.hidden = true; } }, '×'));
+  b.hidden = false;
+}
+
+// ------------------------------------------------------------------ live airing check (no server: AniList & TVmaze allow browser requests)
+async function checkLive(force) {
+  if (!snap || !navigator.onLine) return;
+  if (!force && now() - (live.at || 0) < 3 * 3600) return;
+  const candidates = shows.filter(s => s.state !== 'done');
+  const alIds = new Set(), tmIds = new Set();
+  for (const s of candidates) {
+    const [prov, id] = s.sid.split(':');
+    if (prov === 'al') {
+      for (const se of s.seasons) if (se.media_id && (se.status === 'RELEASING' || se.status === 'NOT_YET_RELEASED' || se === s.seasons[s.seasons.length - 1])) alIds.add(se.media_id);
+    } else if (prov === 'tm' && (s.state === 'new' || s.state === 'waiting' || s.show_status === 'Running')) tmIds.add(id);
+  }
+  const before = Object.fromEntries(shows.map(s => [s.sid, s.new]));
+  try {
+    const ids = [...alIds];
+    for (let i = 0; i < ids.length; i += 50) {
+      const r = await fetch('https://graphql.anilist.co', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ query: 'query($ids:[Int]){Page(perPage:50){media(id_in:$ids,type:ANIME){id status episodes nextAiringEpisode{episode airingAt}}}}', variables: { ids: ids.slice(i, i + 50) } }) });
+      const j = await r.json();
+      for (const m of (j.data && j.data.Page.media) || []) {
+        live.al[m.id] = { status: m.status, episodes: m.episodes, next: m.nextAiringEpisode ? { episode: m.nextAiringEpisode.episode, at: m.nextAiringEpisode.airingAt } : null };
+      }
+    }
+    const tms = [...tmIds];
+    for (let i = 0; i < tms.length; i += 4) {
+      await Promise.all(tms.slice(i, i + 4).map(async id => {
+        try {
+          const j = await (await fetch(`https://api.tvmaze.com/shows/${id}?embed[]=previousepisode&embed[]=nextepisode`)).json();
+          const e = j._embedded || {};
+          const pe = e.previousepisode, ne = e.nextepisode;
+          live.tm[id] = {
+            prev: pe ? { season: pe.season, number: pe.number } : null,
+            next: ne ? { season: ne.season, number: ne.number, at: Date.parse(ne.airstamp) / 1000 } : null,
+          };
+        } catch { /* skip this show */ }
+      }));
+    }
+    live.at = now();
+    LS.set('live', live);
+  } catch { return; }
+  derive(); render(); if (detail) renderDetail();
+  const grew = shows.filter(s => s.new > (before[s.sid] || 0));
+  if (grew.length) notifyNew(grew);
+}
+
+function notifyNew(list) {
+  const text = list.slice(0, 4).map(s => `${s.title} (${fa(s.new)})`).join('، ') + (list.length > 4 ? ' و…' : '');
+  showBanner('🔔 قسمت جدید اومده: ' + text);
+  if (LS.get('notify', false) && 'Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker) {
+    navigator.serviceWorker.ready.then(reg => reg.showNotification('Lost Memories: قسمت جدید', {
+      body: text, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', lang: 'fa', dir: 'rtl', tag: 'new-episodes' })).catch(() => {});
+  }
+}
+
+// ------------------------------------------------------------------ render
+const STATE = { new: 'قسمت جدید', behind: 'نیمه‌کاره', waiting: 'منتظر پخش', done: 'تموم‌شده', unknown: 'نامعلوم' };
+const FILTERS = [['all', 'همه'], ['new', 'قسمت جدید'], ['behind', 'نیمه‌کاره'], ['waiting', 'منتظر پخش'], ['done', 'تموم‌شده']];
+
+function render() {
+  const q = norm($('#q').value);
+  $('#searchWrap').hidden = view === 'more' || view === 'schedule';
+  $('.search').classList.toggle('has', !!q);
+  document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
+  const main = $('#main');
+  if (view === 'more') { $('#chips').replaceChildren(); return main.replaceChildren(renderMore()); }
+  if (!snap) {
+    $('#chips').replaceChildren();
+    return main.replaceChildren(h('div', { class: 'empty' }, PC_PREVIEW ? 'در حال خوندن…' : 'هنوز اطلاعاتی نیومده. اگه اولین باره، از «بیشتر» اتصال رو تنظیم کن.'));
+  }
+  if (view === 'schedule') { $('#chips').replaceChildren(); return main.replaceChildren(renderSchedule()); }
+  const words = q.split(' ').filter(Boolean);
+  if (view === 'movies') {
+    $('#chips').replaceChildren();
+    const ms = (snap.movies || []).filter(m => !words.length || words.every(w => norm([m.title, m.alt, m.year, ...m.files.map(f => f.file)].join(' ')).includes(w)));
+    return main.replaceChildren(ms.length ? h('div', { class: 'posters' }, ms.map(posterEl)) : h('div', { class: 'empty' }, 'فیلمی پیدا نشد.'));
+  }
+  const counts = { all: shows.length };
+  for (const s of shows) counts[s.state] = (counts[s.state] || 0) + 1;
+  $('#chips').replaceChildren(...FILTERS.map(([k, t]) => h('button', { class: 'chip' + (filter === k && !words.length ? ' on' : ''),
+    onclick: () => { filter = k; $('#q').value = ''; render(); window.scrollTo(0, 0); } }, t, h('span', { class: 'n' }, fa(counts[k] || 0)))));
+  const list = shows.filter(s => words.length ? words.every(w => s._hay.includes(w)) : (filter === 'all' || s.state === filter));
+  main.replaceChildren(list.length ? h('div', { class: 'list' }, list.map(card)) : h('div', { class: 'empty' }, 'چیزی پیدا نشد.'));
+}
+
+function statusBadge(s) {
+  if (s.state === 'new') return h('span', { class: 'badge new' }, `${fa(s.new)} قسمت جدید`);
+  if (s.state === 'behind') return h('span', { class: 'badge behind' }, `${fa(s.new)} قسمت مونده`);
+  if (s.state === 'waiting') return h('span', { class: 'badge waiting' }, s.upcoming ? `قسمت ${fa(s.upcoming.episode)} ${relTime(s.upcoming.at)}` : 'منتظر فصل بعد');
+  if (s.state === 'done') return h('span', { class: 'badge done' }, 'تمومش کردی');
+  return h('span', { class: 'badge' }, 'نامعلوم');
+}
+const seasonNum = label => parseInt(String(label).replace(/^S/, '')) || 1;
+
+function nextName(s) {
+  const se = s.seasons.find(x => x.idx === s.pos.idx);
+  let num = seasonNum(s.pos.label), ep = s.pos.episode + 1;
+  if (se && se.episodes && ep > se.episodes) {
+    const nx = s.seasons.find(x => x.idx > s.pos.idx);
+    if (nx) { num = seasonNum(nx.label); ep = 1; }
+  }
+  return s.multi_season && s.kind !== 'anime' ? `${s.title} S${String(num).padStart(2, '0')}E${String(ep).padStart(2, '0')}`
+    : s.multi_season && num > 1 ? `${s.title} Season ${num} ${ep}` : `${s.title} ${ep}`;
+}
+async function copyNext(s) {
+  const t = nextName(s);
+  try { await navigator.clipboard.writeText(t); toast('کپی شد: ' + t); }
+  catch { toast(t); }
+}
+
+function card(s) {
+  const p = s.pos;
+  const total = p.season_episodes || p.season_aired;
+  const pct = total ? Math.min(100, p.episode / total * 100) : 0;
+  const alt = [...new Set([s.alt, s.native])].filter(t => t && t.toLowerCase() !== s.title.toLowerCase()).join(' · ');
+  const stop = e => e.stopPropagation();
+  return h('div', { class: 'card', onclick: () => openDetail(s) },
+    coverEl(s.cover, s.title, 'cover'),
+    h('div', { class: 'cbody' },
+      h('div', { class: 'title ltr' }, s.title),
+      alt ? h('div', { class: 'alt ltr' }, alt) : null,
+      h('div', { class: 'pos' }, 'تا ', h('b', {}, `قسمت ${fa(p.episode)}`), s.multi_season ? ` · فصل ${fa(seasonNum(p.label))}` : '',
+        total ? h('span', { class: 'meta' }, ` از ${fa(total)}`) : null),
+      total ? h('div', { class: 'meter' }, h('i', { style: `width:${pct}%` })) : null,
+      h('div', { class: 'badges' }, statusBadge(s), s.mine ? h('span', { class: 'badge mine' }, 'تغییر گوشی') : s.override ? h('span', { class: 'badge mine' }, 'دستی') : null),
+      h('div', { class: 'steps', onclick: stop },
+        h('button', { class: 'step', 'aria-label': 'یه قسمت جلوتر', onclick: () => setOverride(s, p.idx, p.episode + 1) }, '+'),
+        h('button', { class: 'step', 'aria-label': 'یه قسمت عقب‌تر', onclick: () => setOverride(s, p.idx, p.episode - 1) }, '−'),
+        s.new ? h('button', { class: 'step txt', onclick: () => copyNext(s) }, '📋 قسمت بعد') : null)));
+}
+
+function posterEl(m) {
+  return h('button', { class: 'poster', onclick: () => openMovie(m) },
+    h('div', { class: 'img' }, m.cover ? h('img', { class: 'img', src: m.cover, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer',
+      onerror: e => e.target.remove() }) : '🎬', m.files_deleted ? h('span', { class: 'tag' }, 'دیده‌شده') : null),
+    h('div', { class: 't ltr' }, m.title), h('div', { class: 'y' }, faYear(m.year)));
+}
+
+// ------------------------------------------------------------------ schedule
+function renderSchedule() {
+  const items = [];
+  for (const s of shows) {
+    for (const se of s.seasons) {
+      if (se.next && se.next.at > now() - 3600 && se.next.at < now() + 8 * 86400) items.push({ s, se, ...se.next });
+    }
+  }
+  items.sort((a, b) => a.at - b.at);
+  if (!items.length) return h('div', { class: 'empty' }, 'تا یه هفته‌ی دیگه قسمت جدیدی از سریال‌هات پخش نمی‌شه.');
+  const days = new Map();
+  for (const it of items) {
+    const d = new Date(it.at * 1000);
+    const key = d.toDateString();
+    if (!days.has(key)) days.set(key, { d, list: [] });
+    days.get(key).list.push(it);
+  }
+  const today = new Date().toDateString(), tomorrow = new Date(Date.now() + 86400000).toDateString();
+  return h('div', {}, h('div', { class: 'section' }, 'قسمت‌هایی که تا یه هفته‌ی دیگه پخش می‌شن (به وقت گوشی)'),
+    [...days.values()].map(({ d, list }) => h('div', { class: 'day' },
+      h('h3', {}, d.toDateString() === today ? 'امروز' : d.toDateString() === tomorrow ? 'فردا' : d.toLocaleDateString('fa-IR', { weekday: 'long' }),
+        h('span', {}, d.toLocaleDateString('fa-IR', { month: 'long', day: 'numeric' }))),
+      list.map(it => h('div', { class: 'slot', onclick: () => openDetail(it.s) },
+        coverEl(it.s.cover, it.s.title, it.s.cover ? '' : 'ph'),
+        h('div', { class: 'time' }, new Date(it.at * 1000).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })),
+        h('div', { class: 'info' }, h('div', { class: 'ltr', style: 'text-align:right' }, it.s.title),
+          h('div', { class: 'meta' }, `قسمت ${fa(it.episode)}` + (it.s.multi_season ? ` · ${it.se.label}` : '') + ` · ${relTime(it.at)}`)))))));
+}
+
+// ------------------------------------------------------------------ details
+function ranges(nums) {
+  const n = [...new Set(nums)].sort((a, b) => a - b), out = [];
+  for (let i = 0; i < n.length; i++) {
+    let j = i;
+    while (j + 1 < n.length && n[j + 1] === n[j] + 1) j++;
+    out.push(i === j ? fa(n[i]) : `${fa(n[i])}–${fa(n[j])}`);
+    i = j;
+  }
+  return out.length > 6 ? `${fa(n.length)} قسمت بین ${fa(n[0])} و ${fa(n[n.length - 1])}` : out.join('، ');
+}
+
+const setBody = (...nodes) => $('#sheetBody').replaceChildren(...nodes.flat().filter(n => n != null && n !== false));
+
+function openSheet(title) {
+  $('#sheetTitle').textContent = title;
+  const d = $('#sheet');
+  if (!d.open) { d.showModal(); history.pushState({ sheet: 1 }, ''); }
+  $('#sheetBody').scrollTop = 0;
+}
+function closeSheet() { if ($('#sheet').open) history.back(); }
+window.addEventListener('popstate', () => { if ($('#sheet').open) { $('#sheet').close(); detail = null; } });
+
+function openDetail(s) { detail = { sid: s.sid, idx: s.pos.idx, ep: null }; openSheet(s.title); renderDetail(); }
+
+function renderDetail() {
+  if (!detail || detail.movie) return;
+  const s = shows.find(x => x.sid === detail.sid);
+  if (!s) return;
+  const se = s.seasons.find(x => x.idx === detail.idx) || s.seasons[0];
+  const owned = (s.episodes_owned || []).filter(e => e.idx === se.idx);
+  const byEp = {};
+  for (const e of owned) (byEp[e.episode] = byEp[e.episode] || []).push(e);
+  const total = Math.max(se.episodes || 0, se.aired || 0, ...owned.map(e => e.episode), 0);
+  const seenUpTo = s.pos.idx > se.idx ? Infinity : s.pos.idx === se.idx ? s.pos.episode : 0;
+  const missing = [];
+  for (let e = 1; e <= Math.min(total, se.aired || total); e++) if (!byEp[e]) missing.push(e);
+  const alt = [...new Set([s.alt, s.native])].filter(t => t && t.toLowerCase() !== s.title.toLowerCase()).join(' · ');
+
+  const tiles = [];
+  for (let e = 1; e <= total; e++) {
+    const c = byEp[e] || [];
+    const cls = ['tile', c.some(x => srcKind(x.source) === 'pc') ? 'pc' : c.length ? 'phone' : 'none', e <= seenUpTo ? 'seen' : '', detail.ep === e ? 'sel' : ''].join(' ');
+    tiles.push(h('button', { class: cls, onclick: () => { detail.ep = e; renderDetail(); } }, fa(e)));
+  }
+  let panel = null;
+  if (detail.ep) {
+    const c = byEp[detail.ep] || [];
+    panel = h('div', { class: 'box copies' },
+      h('div', { class: 'row', style: 'justify-content:space-between' }, h('b', {}, `قسمت ${fa(detail.ep)}` + (s.multi_season ? ` · ${se.label}` : '')),
+        h('button', { class: 'btn primary', onclick: () => setOverride(s, se.idx, detail.ep) }, 'تا اینجا دیدم')),
+      c.length ? c.map(x => h('div', { class: 'copy' }, h('span', {}, srcLabel(x.source) + (x.size ? ' · ' + bytes(x.size) : '') + (x.mtime ? ' · ' + date(x.mtime) : '')),
+        h('span', { class: 'f' }, x.file))) : h('div', { class: 'meta' }, 'این قسمت رو هیچ‌جا نداری.'));
+  }
+
+  setBody(
+    h('div', { class: 'dhead' }, coverEl(s.cover, s.title, 'cover'),
+      h('div', { style: 'min-width:0' },
+        h('h2', { class: 'ltr' }, s.title), alt ? h('div', { class: 'alt ltr' }, alt) : null,
+        h('div', { class: 'pos', style: 'margin-top:6px' }, 'تا ', h('b', {}, `قسمت ${fa(s.pos.episode)}`), s.multi_season ? ` · فصل ${fa(seasonNum(s.pos.label))}` : ''),
+        h('div', { class: 'badges', style: 'margin-top:6px' }, statusBadge(s), h('span', { class: 'badge' }, s.kind === 'anime' ? 'انیمه' : 'سریال')),
+        s.url ? h('a', { href: s.url, target: '_blank', rel: 'noopener', class: 'meta' }, 'صفحه‌ی سریال ↗') : null)),
+    h('div', { class: 'steps', style: 'margin-bottom:12px' },
+      h('button', { class: 'step', onclick: () => setOverride(s, s.pos.idx, s.pos.episode + 1) }, '+'),
+      h('button', { class: 'step', onclick: () => setOverride(s, s.pos.idx, s.pos.episode - 1) }, '−'),
+      s.override || s.mine ? h('button', { class: 'step txt', onclick: () => clearOverride(s) }, '↺ خودکار') : null,
+      s.new ? h('button', { class: 'step txt', onclick: () => copyNext(s) }, '📋 کپی اسم قسمت بعد') : null),
+    h('div', { class: 'box' }, h('h3', {}, 'کجا تا کجا'),
+      (s.source_progress || []).length ? s.source_progress.map((sp, i) => {
+        const mine = owned.filter(e => e.source === sp.source).map(e => e.episode);
+        return h('div', { class: 'prog' + (i === 0 ? ' lead' : '') }, h('span', { class: 'who' }, (i === 0 && s.source_progress.length > 1 ? '★ ' : '') + srcLabel(sp.source)),
+          h('span', {}, `تا قسمت ${fa(sp.episode)}` + (s.multi_season ? ` (${sp.label})` : '')),
+          h('span', { class: 'r' }, mine.length ? 'این فصل: ' + ranges(mine) : 'از این فصل چیزی نداره'));
+      }) : h('div', { class: 'meta' }, 'فایل‌هاش برای آزاد کردن فضا پاک شده؛ جایی که رسیده بودی حفظ شده.')),
+    s.seasons.length > 1 ? h('div', { class: 'seasons' }, s.seasons.map(x => h('button', { class: x.idx === se.idx ? 'on' : '',
+      onclick: () => { detail.idx = x.idx; detail.ep = null; renderDetail(); } }, x.label + (x.episodes ? ` · ${fa(x.episodes)}` : '')))) : null,
+    h('div', { class: 'meta' }, `دارم: ${fa(Object.keys(byEp).length)} از ${fa(total)}` + (missing.length ? ` · ندارم: ${ranges(missing)}` : '')),
+    h('div', { class: 'legend' },
+      h('span', {}, h('i', { style: 'background:var(--accent)' }), 'روی کامپیوتر'),
+      h('span', {}, h('i', { style: 'background:var(--accent-soft);border:1px solid var(--accent)' }), 'فقط گوشی / تلگرام'),
+      h('span', {}, h('i', { style: 'border:1px dashed var(--line)' }), 'ندارم'),
+      h('span', {}, h('i', { style: 'width:7px;height:7px;border-radius:50%;background:var(--new)' }), 'دیده‌شده')),
+    total ? h('div', { class: 'tiles' }, tiles) : h('div', { class: 'empty' }, 'از این فصل چیزی نیست.'),
+    panel);
+}
+
+function openMovie(m) {
+  detail = { movie: m.key };
+  openSheet(m.title);
+  setBody(
+    h('div', { class: 'dhead' }, coverEl(m.cover, '🎬', 'cover'),
+      h('div', { style: 'min-width:0' }, h('h2', { class: 'ltr' }, m.title), m.alt ? h('div', { class: 'alt ltr' }, m.alt) : null,
+        h('div', { class: 'meta', style: 'margin-top:6px' }, [faYear(m.year), m.stars].filter(Boolean).join(' · ')),
+        m.files_deleted ? h('span', { class: 'badge done' }, 'دیده‌شده') : null,
+        m.url ? h('div', {}, h('a', { href: m.url, target: '_blank', rel: 'noopener', class: 'meta' }, 'صفحه‌ی فیلم ↗')) : null)),
+    h('div', { class: 'box' }, h('h3', {}, 'کجا دارمش'),
+      m.files.length ? m.files.map(f => h('div', { class: 'copy' }, h('span', {}, srcLabel(f.source) + (f.size ? ' · ' + bytes(f.size) : '') + (f.mtime ? ' · ' + date(f.mtime) : '')),
+        h('span', { class: 'f' }, f.file))) : h('div', { class: 'meta' }, 'دیده‌شده؛ فایلش برای آزاد کردن فضا پاک شده.')));
+}
+
+// ------------------------------------------------------------------ more / settings
+function renderMore() {
+  const c = conn();
+  const url = h('input', { type: 'url', value: c.url, placeholder: 'https://script.google.com/macros/s/…/exec', inputmode: 'url' });
+  const key = h('input', { type: 'password', value: c.key, placeholder: 'رمز پل', autocomplete: 'off' });
+  const status = h('div', { class: 'meta', style: 'margin-top:8px' });
+  const save = async () => {
+    LS.set('conn', { url: url.value.trim(), key: key.value.trim() });
+    status.textContent = 'در حال امتحان…';
+    try { await bridge('load', { have: 'x' }); status.textContent = '✓ اتصال برقراره'; snapTime = 0; sync(); }
+    catch (e) { status.textContent = '✗ ' + (e.message || e); }
+  };
+  const admInput = h('input', { type: 'file', accept: '.db,application/octet-stream,application/x-sqlite3', hidden: '' });
+  const admBar = h('div', { class: 'progress', hidden: '' }, h('i'));
+  const admStatus = h('div', { class: 'meta', style: 'margin-top:6px' });
+  admInput.addEventListener('change', () => uploadAdm(admInput.files[0], admBar, admStatus));
+  const notifyOn = LS.get('notify', false) && 'Notification' in window && Notification.permission === 'granted';
+  return h('div', {},
+    PC_PREVIEW ? h('div', { class: 'box' }, h('h3', {}, 'پیش‌نمایش روی کامپیوتر'),
+      h('div', { class: 'meta' }, 'این صفحه از روی کامپیوتر باز شده و اطلاعات رو مستقیم از همین سیستم می‌خونه. تغییرات اینجا فقط توی همین مرورگر می‌مونه.')) :
+      h('div', { class: 'box' }, h('h3', {}, 'اتصال به اطلاعات'),
+        h('div', { class: 'meta' }, 'آدرس Web App و رمزی که موقع راه‌اندازی پل Apps Script نشون داده شد.'),
+        h('label', {}, 'آدرس پل'), url, h('label', {}, 'رمز'), key,
+        h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn primary', onclick: save }, 'ذخیره و امتحان')), status),
+    h('div', { class: 'box' }, h('h3', {}, 'وضعیت'),
+      h('div', { class: 'kv' }, h('span', {}, 'اطلاعات از'), h('span', {}, snap ? `سیستم ${snap.machine} · ${relTime(snap.written_at)}` : '—')),
+      h('div', { class: 'kv' }, h('span', {}, 'آخرین همگام‌سازی'), h('span', {}, LS.get('lastSync', 0) ? relTime(LS.get('lastSync', 0)) : '—')),
+      h('div', { class: 'kv' }, h('span', {}, 'بررسی زنده‌ی پخش'), h('span', {}, live.at ? relTime(live.at) : '—')),
+      h('div', { class: 'kv' }, h('span', {}, 'تغییرات گوشی'), h('span', {}, LS.get('dirty', false) ? 'در صف فرستادن' : 'فرستاده شده')),
+      h('div', { class: 'row', style: 'margin-top:10px' },
+        h('button', { class: 'btn', onclick: () => sync() }, 'همگام‌سازی'),
+        h('button', { class: 'btn', onclick: () => checkLive(true).then(() => toast('بررسی شد')) }, 'بررسی قسمت‌های جدید'))),
+    PC_PREVIEW ? null : h('div', { class: 'box' }, h('h3', {}, 'فرستادن پشتیبان ADM'),
+      h('div', { class: 'meta' }, 'توی ADM از منو، پشتیبان بگیر (فایل ADM.db). اینجا انتخابش کن تا بره توی Drive؛ دفعه‌ی بعد که کامپیوتر «آپدیت» کنه، دانلودهای گوشی وارد می‌شن.'),
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn primary', onclick: () => admInput.click() }, 'انتخاب فایل ADM.db')),
+      admInput, admBar, admStatus),
+    h('div', { class: 'box' }, h('h3', {}, 'اعلان قسمت جدید'),
+      h('div', { class: 'meta' }, 'هر بار اپ رو باز کنی، پخش سریال‌ها بررسی می‌شه و اگه قسمت جدیدی اومده باشه خبرت می‌کنه.'),
+      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn', onclick: toggleNotify }, notifyOn ? 'خاموش کردن اعلان' : 'روشن کردن اعلان'))),
+    h('div', { class: 'meta', style: 'text-align:center; margin-top:16px' }, `Lost Memories · نسخه‌ی ${VERSION}`));
+}
+
+async function toggleNotify() {
+  if (LS.get('notify', false) && Notification.permission === 'granted') { LS.set('notify', false); return render(); }
+  if (!('Notification' in window)) return toast('این مرورگر اعلان نداره');
+  const p = await Notification.requestPermission();
+  LS.set('notify', p === 'granted');
+  toast(p === 'granted' ? 'اعلان روشن شد' : 'اجازه‌ی اعلان داده نشد');
+  render();
+}
+
+async function uploadAdm(file, bar, status) {
+  if (!file) return;
+  bar.hidden = false; bar.firstChild.style.width = '10%';
+  status.textContent = `در حال خوندن ${file.name} (${bytes(file.size)})…`;
+  try {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    if (String.fromCharCode(...buf.slice(0, 15)) !== 'SQLite format 3') throw new Error('این فایل پشتیبان ADM نیست');
+    let bin = '';
+    for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    bar.firstChild.style.width = '40%';
+    status.textContent = 'در حال فرستادن به Drive…';
+    const r = await bridge('upload_adm', { base64: btoa(bin) });
+    bar.firstChild.style.width = '100%';
+    status.textContent = `✓ ذخیره شد: ${r.saved}. دفعه‌ی بعد که کامپیوتر «آپدیت» کنه وارد می‌شه.`;
+  } catch (e) {
+    status.textContent = '✗ ' + (e.message || e);
+  }
+}
+
+// ------------------------------------------------------------------ boot
+document.querySelectorAll('#nav button').forEach(b => b.addEventListener('click', () => {
+  view = b.dataset.view; render(); window.scrollTo(0, 0);
+}));
+$('#q').addEventListener('input', () => render());
+$('#qClear').addEventListener('click', () => { $('#q').value = ''; render(); });
+$('#syncBtn').addEventListener('click', () => sync());
+$('#sheetClose').addEventListener('click', closeSheet);
+$('#sheet').addEventListener('cancel', e => { e.preventDefault(); closeSheet(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && now() - LS.get('lastSync', 0) > 600) sync(true); });
+window.addEventListener('online', () => sync(true));
+
+(async function boot() {
+  phone = LS.get('phone', phone);
+  phone.overrides = phone.overrides || {};
+  if (!PC_PREVIEW) {
+    const cached = await IDB.get('snap');
+    if (cached) { snap = cached.snap; snapTime = cached.snapTime; }
+  }
+  derive(); render(); updateSyncInfo();
+  if ('serviceWorker' in navigator && !PC_PREVIEW) navigator.serviceWorker.register('sw.js').catch(() => {});
+  sync(true);
+})();
