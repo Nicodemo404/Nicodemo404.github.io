@@ -7,7 +7,7 @@
  * reads the PC's live snapshot directly, for previewing.
  */
 'use strict';
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const $ = s => document.querySelector(s);
 const fa = n => (n ?? '').toLocaleString('fa-IR');
 const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
@@ -53,7 +53,7 @@ let snap = null;                                  // newest PC snapshot
 let snapTime = 0;                                 // bridge: Drive modified time of that snapshot (ms)
 let phone = { machine: 'phone', overrides: {} };  // changes made on the phone
 let live = LS.get('live', { al: {}, tm: {}, at: 0 });   // fresh airing data fetched by the phone
-let view = 'shows', filter = 'all', detail = null;
+let view = 'shows', filter = 'all', genre = '', detail = null;
 let shows = [];                                   // derived from snap + phone + live
 
 const conn = () => LS.get('conn', { url: '', key: '' });
@@ -134,7 +134,7 @@ function derive() {
     const cur = seasons.find(se => se.idx === pos.idx);
     return { ...s, seasons, pos: { ...pos, label: cur ? cur.label : 'S' + pos.idx, season_episodes: cur && cur.episodes, season_aired: cur && cur.aired },
       override: manual, mine, new: fresh, upcoming, state,
-      _hay: norm([s.title, s.alt, s.native, ...(s.names || []), ...(s.episodes_owned || []).map(e => e.file)].join(' | ')) };
+      _hay: norm([s.title, s.alt, s.native, ...(s.genres || []), ...(s.names || []), ...(s.episodes_owned || []).map(e => e.file)].join(' | ')) };
   });
   const order = { new: 0, behind: 1, waiting: 2, unknown: 3, done: 4 };
   shows.sort((a, b) => order[a.state] - order[b.state] || (b.active || 0) - (a.active || 0));
@@ -327,6 +327,7 @@ function render() {
   $('.search').classList.toggle('has', !!q);
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
   const main = $('#main');
+  $('#genres').replaceChildren();
   if (view === 'more') { $('#chips').replaceChildren(); return main.replaceChildren(renderMore()); }
   if (!snap) {
     $('#chips').replaceChildren();
@@ -336,15 +337,42 @@ function render() {
   const words = q.split(' ').filter(Boolean);
   if (view === 'movies') {
     $('#chips').replaceChildren();
-    const ms = (snap.movies || []).filter(m => !words.length || words.every(w => norm([m.title, m.alt, m.year, ...m.files.map(f => f.file)].join(' ')).includes(w)));
+    const all = snap.movies || [];
+    genreChips(all);
+    const ms = all.filter(m => hasGenre(m) && (!words.length || words.every(w => norm([m.title, m.alt, m.year, ...(m.genres || []), ...m.files.map(f => f.file)].join(' ')).includes(w))));
     return main.replaceChildren(ms.length ? h('div', { class: 'posters' }, ms.map(posterEl)) : h('div', { class: 'empty' }, 'فیلمی پیدا نشد.'));
   }
   const counts = { all: shows.length };
   for (const s of shows) counts[s.state] = (counts[s.state] || 0) + 1;
   $('#chips').replaceChildren(...FILTERS.map(([k, t]) => h('button', { class: 'chip' + (filter === k && !words.length ? ' on' : ''),
     onclick: () => { filter = k; $('#q').value = ''; render(); window.scrollTo(0, 0); } }, t, h('span', { class: 'n' }, fa(counts[k] || 0)))));
-  const list = shows.filter(s => words.length ? words.every(w => s._hay.includes(w)) : (filter === 'all' || s.state === filter));
+  genreChips(shows);
+  const list = shows.filter(s => hasGenre(s) && (words.length ? words.every(w => s._hay.includes(w)) : (filter === 'all' || s.state === filter)));
   main.replaceChildren(list.length ? h('div', { class: 'list' }, list.map(card)) : h('div', { class: 'empty' }, 'چیزی پیدا نشد.'));
+}
+
+// genres: a second chip row (only those present in the current view, most common first)
+const hasGenre = x => !genre || (x.genres || []).includes(genre);
+function genreChips(items) {
+  const c = {};
+  for (const x of items) for (const g of x.genres || []) c[g] = (c[g] || 0) + 1;
+  const list = Object.entries(c).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'fa'));
+  if (!list.length) return;
+  if (genre && !c[genre]) genre = '';
+  $('#genres').replaceChildren(h('button', { class: 'chip' + (!genre ? ' on' : ''), onclick: () => pickGenre('') }, 'همه‌ی ژانرها'),
+    ...list.map(([g, n]) => h('button', { class: 'chip' + (genre === g ? ' on' : ''), onclick: () => pickGenre(g) }, g, h('span', { class: 'n' }, fa(n)))));
+  const on = $('#genres .chip.on');
+  if (on && genre) on.scrollIntoView({ inline: 'center', block: 'nearest' });
+}
+function pickGenre(g) {
+  genre = genre === g ? '' : g;
+  if ($('#sheet').open) closeSheet();
+  render(); window.scrollTo(0, 0);
+}
+function genreTags(list, max) {
+  const gs = (list || []).slice(0, max || 99);
+  return gs.length ? h('div', { class: 'gtags' }, gs.map(g => h('button', { class: 'gtag' + (g === genre ? ' on' : ''),
+    onclick: e => { e.stopPropagation(); pickGenre(g); } }, g))) : null;
 }
 
 function statusBadge(s) {
@@ -383,6 +411,7 @@ function card(s) {
     h('div', { class: 'cbody' },
       h('div', { class: 'title ltr' }, s.title),
       alt ? h('div', { class: 'alt ltr' }, alt) : null,
+      genreTags(s.genres, 3),
       h('div', { class: 'pos' }, 'تا ', h('b', {}, `قسمت ${fa(p.episode)}`), s.multi_season ? ` · فصل ${fa(seasonNum(p.label))}` : '',
         total ? h('span', { class: 'meta' }, ` از ${fa(total)}`) : null),
       total ? h('div', { class: 'meter' }, h('i', { style: `width:${pct}%` })) : null,
@@ -397,7 +426,8 @@ function posterEl(m) {
   return h('button', { class: 'poster', onclick: () => openMovie(m) },
     h('div', { class: 'img' }, m.cover ? h('img', { class: 'img', src: m.cover, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer',
       onerror: e => e.target.remove() }) : '🎬', m.files_deleted ? h('span', { class: 'tag' }, 'دیده‌شده') : null),
-    h('div', { class: 't ltr' }, m.title), h('div', { class: 'y' }, faYear(m.year)));
+    h('div', { class: 't ltr' }, m.title), h('div', { class: 'y' }, faYear(m.year)),
+    (m.genres || []).length ? h('div', { class: 'g' }, m.genres.slice(0, 2).join(' · ')) : null);
 }
 
 // ------------------------------------------------------------------ schedule
@@ -490,6 +520,7 @@ function renderDetail() {
         h('h2', { class: 'ltr' }, s.title), alt ? h('div', { class: 'alt ltr' }, alt) : null,
         h('div', { class: 'pos', style: 'margin-top:6px' }, 'تا ', h('b', {}, `قسمت ${fa(s.pos.episode)}`), s.multi_season ? ` · فصل ${fa(seasonNum(s.pos.label))}` : ''),
         h('div', { class: 'badges', style: 'margin-top:6px' }, statusBadge(s), h('span', { class: 'badge' }, s.kind === 'anime' ? 'انیمه' : 'سریال')),
+        (s.genres || []).length ? h('div', { style: 'margin-top:8px' }, genreTags(s.genres)) : null,
         s.url ? h('a', { href: s.url, target: '_blank', rel: 'noopener', class: 'meta' }, 'صفحه‌ی سریال ↗') : null)),
     h('div', { class: 'steps', style: 'margin-bottom:12px' },
       h('button', { class: 'step', onclick: () => setOverride(s, s.pos.idx, s.pos.episode + 1) }, '+'),
@@ -522,6 +553,7 @@ function openMovie(m) {
     h('div', { class: 'dhead' }, coverEl(m.cover, '🎬', 'cover'),
       h('div', { style: 'min-width:0' }, h('h2', { class: 'ltr' }, m.title), m.alt ? h('div', { class: 'alt ltr' }, m.alt) : null,
         h('div', { class: 'meta', style: 'margin-top:6px' }, [faYear(m.year), m.stars].filter(Boolean).join(' · ')),
+        (m.genres || []).length ? h('div', { style: 'margin:6px 0' }, genreTags(m.genres)) : null,
         m.files_deleted ? h('span', { class: 'badge done' }, 'دیده‌شده') : null,
         m.url ? h('div', {}, h('a', { href: m.url, target: '_blank', rel: 'noopener', class: 'meta' }, 'صفحه‌ی فیلم ↗')) : null)),
     h('div', { class: 'box' }, h('h3', {}, 'کجا دارمش'),
