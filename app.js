@@ -7,7 +7,7 @@
  * reads the PC's live snapshot directly, for previewing.
  */
 'use strict';
-const VERSION = '1.4.1';
+const VERSION = '1.4.2';
 const $ = s => document.querySelector(s);
 const fa = n => (n ?? '').toLocaleString('fa-IR');
 const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
@@ -510,7 +510,7 @@ function posterEl(m) {
 // The PC fetches download links (it holds the DigiMoviez / NineAnime logins) and queues them in its
 // snapshot; here they're handed to ADM: an Android intent opens ADM with the link, or copy / share.
 const ADM_PKG = { free: 'com.dv.adm', pro: 'com.dv.adm.pay' };
-const BRIDGE_WANTED = 2;          // Code.gs version this app expects (film search for «خواهم دید»)
+const BRIDGE_WANTED = 3;          // Code.gs version this app expects (film search for «خواهم دید»)
 const dismissed = () => LS.get('dismissedLinks', {});
 function sentLinks() {
   const all = (snap && snap.phone_links) || {}, gone = dismissed();
@@ -619,7 +619,7 @@ function openWishAdd() {
     if (!q) return;
     res.replaceChildren(h('div', { class: 'meta' }, 'در حال جستجو…'));
     const out = await discoverPhone(q, wishKind);
-    res.replaceChildren(...(out.length ? out.map(r => {
+    res.replaceChildren(...(r_err && out.length ? [h('div', { class: 'meta', style: 'color:var(--warn)' }, r_err)] : []), ...(out.length ? out.map(r => {
       const sh = showFor(r.key);
       const have = !!sh && !sh.wish || ((snap && snap.movies) || []).some(m => !m.wish && (m.key === r.key || (r.imdb && m.imdb === r.imdb)));
       const wished = !have && ((phone.wishlist[r.key] && !phone.wishlist[r.key].removed) || (!!sh && sh.wish));
@@ -671,7 +671,7 @@ async function discoverPhone(q, kind) {
       for (const m of j.items || []) out.push({ key: 'wm:imdb:' + m.id, kind: 'movie', title: m.title, year: m.year, cover: m.cover,
         imdb: m.id, url: `https://www.imdb.com/title/${m.id}/`, info: m.stars });
     } catch (e) {
-      if (kind === 'movie') r_err = /unknown action/.test(e.message || '') ? 'برای جستجوی فیلم، پل (Code.gs) باید یه بار دوباره دیپلوی بشه؛ تا اون موقع فیلم‌ها رو از کامپیوتر اضافه کن.'
+      r_err = /unknown action/.test(e.message || '') ? 'برای جستجوی فیلم، پل (Code.gs) باید یه بار دوباره دیپلوی بشه؛ تا اون موقع فیلم‌ها رو از کامپیوتر اضافه کن.'
         : 'جستجوی فیلم نشد: ' + (e.message || e);
     }
   })());
