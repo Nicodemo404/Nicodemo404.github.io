@@ -7,7 +7,7 @@
  * reads the PC's live snapshot directly, for previewing.
  */
 'use strict';
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 const $ = s => document.querySelector(s);
 const fa = n => (n ?? '').toLocaleString('fa-IR');
 const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
@@ -212,6 +212,7 @@ async function sync(silent) {
       const c = conn();
       if (!c.url || !c.key) { showBanner('برای دیدن اطلاعات، توی «بیشتر» آدرس پل و رمز رو وارد کن.', true); return; }
       const j = await bridge('load', { have: snapTime || '', gz: 'DecompressionStream' in window ? 1 : 0 });
+      LS.set('bridgeVer', j.bridge || 1);
       const fresh = j.snapshot_gz ? await gunzipJson(j.snapshot_gz) : j.snapshot;
       if (fresh) { snap = fresh; snapTime = j.snapshot_time; await IDB.set('snap', { snap, snapTime }); }
       if (j.phone && j.phone.overrides) mergePhone(j.phone);
@@ -509,6 +510,7 @@ function posterEl(m) {
 // The PC fetches download links (it holds the DigiMoviez / NineAnime logins) and queues them in its
 // snapshot; here they're handed to ADM: an Android intent opens ADM with the link, or copy / share.
 const ADM_PKG = { free: 'com.dv.adm', pro: 'com.dv.adm.pay' };
+const BRIDGE_WANTED = 2;          // Code.gs version this app expects (film search for «خواهم دید»)
 const dismissed = () => LS.get('dismissedLinks', {});
 function sentLinks() {
   const all = (snap && snap.phone_links) || {}, gone = dismissed();
@@ -561,10 +563,17 @@ function sentBox() {
 // downloaded file moves a show to the main list. The phone saves what it adds in state-phone.json;
 // the PC fills in the full show (seasons, episodes, links) from AniList / TVmaze.
 const wishGone = key => (phone.wishlist[key] || {}).removed;
+// a wishlist / search key may be a later season's AniList id; the PC keeps the show under the franchise root
+function showFor(key) {
+  const exact = shows.find(s => s.sid === key);
+  if (exact || !key.startsWith('al:')) return exact;
+  const id = +key.slice(3);
+  return shows.find(s => s.sid.startsWith('al:') && s.seasons.some(se => se.media_id === id));
+}
 // added on this phone but not in the PC's snapshot yet
 function wishPending() {
-  const known = new Set([...shows.map(s => s.sid), ...((snap && snap.movies) || []).map(m => m.key)]);
-  return Object.entries(phone.wishlist || {}).filter(([k, w]) => !w.removed && !known.has(k));
+  const movies = new Set(((snap && snap.movies) || []).map(m => m.key));
+  return Object.entries(phone.wishlist || {}).filter(([k, w]) => !w.removed && !movies.has(k) && !showFor(k));
 }
 function renderWishPhone() {
   const ws = shows.filter(s => s.wish && !wishGone(s.sid));
@@ -586,6 +595,12 @@ function renderWishPhone() {
 const KIND_FA = { anime: 'انیمه', series: 'سریال', movie: 'سینمایی' };
 function wishRemove(key) {
   phone.wishlist[key] = { removed: true, updated: now() };
+  // the phone may have added it under another season's id: drop that entry too
+  const s = shows.find(x => x.sid === key);
+  if (s) for (const se of s.seasons) {
+    const k = 'al:' + se.media_id;
+    if (se.media_id && k !== key && phone.wishlist[k] && !phone.wishlist[k].removed) phone.wishlist[k] = { removed: true, updated: now() };
+  }
   LS.set('phone', phone); queuePush(); render();
   if ($('#sheet').open) closeSheet();
   toast('از «خواهم دید» برداشته شد');
@@ -605,7 +620,9 @@ function openWishAdd() {
     res.replaceChildren(h('div', { class: 'meta' }, 'در حال جستجو…'));
     const out = await discoverPhone(q, wishKind);
     res.replaceChildren(...(out.length ? out.map(r => {
-      const have = shows.some(s => s.sid === r.key && !s.wish), wished = (phone.wishlist[r.key] && !phone.wishlist[r.key].removed) || shows.some(s => s.sid === r.key && s.wish);
+      const sh = showFor(r.key);
+      const have = !!sh && !sh.wish || ((snap && snap.movies) || []).some(m => !m.wish && (m.key === r.key || (r.imdb && m.imdb === r.imdb)));
+      const wished = !have && ((phone.wishlist[r.key] && !phone.wishlist[r.key].removed) || (!!sh && sh.wish));
       const b = h('button', { class: 'btn' + (have || wished ? '' : ' primary'), disabled: have || wished ? '' : null }, have ? '✓ توی آرشیو' : wished ? '✓ اضافه شده' : '+ افزودن');
       b.onclick = () => {
         phone.wishlist[r.key] = { kind: r.kind, title: r.title, cover: r.cover, year: r.year, imdb: r.imdb, anilist: r.anilist,
@@ -653,7 +670,10 @@ async function discoverPhone(q, kind) {
       const j = await bridge('imdb_search', { q });
       for (const m of j.items || []) out.push({ key: 'wm:imdb:' + m.id, kind: 'movie', title: m.title, year: m.year, cover: m.cover,
         imdb: m.id, url: `https://www.imdb.com/title/${m.id}/`, info: m.stars });
-    } catch (e) { if (kind === 'movie') r_err = 'فیلم‌های غیرانیمه از IMDb خونده می‌شن و برای گوشی باید پل یه بار دوباره دیپلوی بشه (یا از کامپیوتر اضافه‌شون کن).'; }
+    } catch (e) {
+      if (kind === 'movie') r_err = /unknown action/.test(e.message || '') ? 'برای جستجوی فیلم، پل (Code.gs) باید یه بار دوباره دیپلوی بشه؛ تا اون موقع فیلم‌ها رو از کامپیوتر اضافه کن.'
+        : 'جستجوی فیلم نشد: ' + (e.message || e);
+    }
   })());
   await Promise.all(jobs.map(p => p.catch(() => {})));
   return out;
@@ -845,6 +865,8 @@ function renderMore() {
       h('div', { class: 'kv' }, h('span', {}, 'آخرین همگام‌سازی'), h('span', {}, LS.get('lastSync', 0) ? relTime(LS.get('lastSync', 0)) : '—')),
       h('div', { class: 'kv' }, h('span', {}, 'بررسی زنده‌ی پخش'), h('span', {}, live.at ? relTime(live.at) : '—')),
       h('div', { class: 'kv' }, h('span', {}, 'تغییرات گوشی'), h('span', {}, LS.get('dirty', false) ? 'در صف فرستادن' : 'فرستاده شده')),
+      PC_PREVIEW ? null : h('div', { class: 'kv' }, h('span', {}, 'نسخه‌ی پل'), h('span', {}, LS.get('bridgeVer', 0) >= BRIDGE_WANTED ? `${fa(LS.get('bridgeVer', 0))} ✓`
+        : LS.get('bridgeVer', 0) ? `${fa(LS.get('bridgeVer', 0))} — قدیمیه؛ Code.gs رو دوباره دیپلوی کن` : '—')),
       h('div', { class: 'row', style: 'margin-top:10px' },
         h('button', { class: 'btn', onclick: () => sync() }, 'همگام‌سازی'),
         h('button', { class: 'btn', onclick: () => checkLive(true).then(() => toast('بررسی شد')) }, 'بررسی قسمت‌های جدید'))),
