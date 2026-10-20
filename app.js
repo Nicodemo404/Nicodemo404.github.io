@@ -505,7 +505,7 @@ const ADM_PKG = { free: 'com.dv.adm', pro: 'com.dv.adm.pay' };
 const dismissed = () => LS.get('dismissedLinks', {});
 function sentLinks() {
   const all = (snap && snap.phone_links) || {}, gone = dismissed();
-  return Object.entries(all).filter(([k, v]) => (v.items || []).length && gone[k] !== v.sent_at)
+  return Object.entries(all).filter(([k, v]) => (v.items || []).length && gone[k] !== v.sent_at && (v.expires || v.sent_at + 4 * 86400) > now() - 3600)
     .sort((a, b) => b[1].sent_at - a[1].sent_at);
 }
 function admHref(url) {
@@ -524,11 +524,12 @@ async function shareLinks(urls, title) {
 }
 function linkGroup(key, v, withTitle) {
   const urls = v.items.map(i => i.url);
-  const left = (v.sent_at + 4 * 86400 - now());
+  const until = v.expires || v.sent_at + 4 * 86400;
+  const left = until - now();
   return h('div', { class: 'lgroup' },
     h('div', { class: 'lhead' },
       withTitle ? h('b', { class: 'ltr' }, v.title) : h('b', {}, '📥 لینک‌های فرستاده‌شده'),
-      h('span', { class: 'meta' }, `${relTime(v.sent_at)} · ${left > 0 ? 'تا ' + relTime(v.sent_at + 4 * 86400) + ' معتبره' : 'شاید منقضی شده باشه'}`)),
+      h('span', { class: 'meta' }, `${relTime(v.sent_at)} · ${left > 0 ? 'لینک‌ها ' + relTime(until) + ' منقضی می‌شن' : 'لینک‌ها منقضی شدن؛ از کامپیوتر دوباره بفرست'}`)),
     h('div', { class: 'lrows' }, v.items.map(i => h('div', { class: 'lrow' },
       h('div', { class: 'lt' }, h('span', {}, i.label || v.title), h('small', {}, [i.quality, i.size, i.dubbed ? 'دوبله' : null].filter(Boolean).join(' · '))),
       h('a', { class: 'adm', href: admHref(i.url), title: i.file }, '⬇ ADM'),
