@@ -279,3 +279,24 @@ main { padding: 12px 14px calc(var(--nav-h) + env(safe-area-inset-bottom) + 24px
   .top-shell, main, .bottomnav { padding-left: max(14px, env(safe-area-inset-left)); padding-right: max(14px, env(safe-area-inset-right)); }
   .bottomnav span { display: none; }
 }
+
+/* ------------------------------------------------------------------ links sent from the PC (ADM) */
+.sent-box { background: var(--panel); border: 1px solid var(--accent-glow); border-radius: var(--r-lg); padding: 4px 12px 10px; margin-bottom: 14px;
+  box-shadow: var(--shadow), 0 0 18px -8px var(--accent-glow); }
+.sent-toggle { width: 100%; display: flex; align-items: center; gap: 8px; border: 0; background: none; padding: 8px 0; font-weight: 800; font-size: 13.5px; color: var(--text); }
+.sent-toggle span:first-child { flex: 1; text-align: right; }
+.sent-toggle .n { background: var(--grad); color: var(--on-accent); border-radius: var(--r-pill); padding: 0 8px; font-size: 11.5px; }
+.lgroup { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px; }
+.box > .lgroup { border-top: 0; margin: 0; padding: 0; }
+.lhead { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; }
+.lhead b { font-size: 13.5px; text-align: right; }
+.lrows { display: flex; flex-direction: column; gap: 6px; }
+.lrow { display: flex; align-items: center; gap: 8px; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-md); padding: 6px 8px; }
+.lrow .lt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lrow .lt span { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lrow .lt small { font-size: 11px; color: var(--muted); direction: ltr; text-align: right; }
+.lrow .adm { flex: none; background: var(--grad); color: var(--on-accent); font-weight: 800; font-size: 12px; padding: 6px 10px; border-radius: var(--r-sm);
+  text-decoration: none; box-shadow: 0 0 12px -4px var(--accent-glow); }
+.lrow .lc { flex: none; width: 32px; height: 32px; border-radius: var(--r-sm); border: 1px solid var(--line); background: var(--panel); color: var(--body); display: grid; place-items: center; }
+.lact { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.lact .btn { height: 34px; font-size: 12.5px; padding: 0 12px; }

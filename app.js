@@ -7,7 +7,7 @@
  * reads the PC's live snapshot directly, for previewing.
  */
 'use strict';
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const $ = s => document.querySelector(s);
 const fa = n => (n ?? '').toLocaleString('fa-IR');
 const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
@@ -391,7 +391,8 @@ function render() {
     k === 'new' ? h('i', { class: 'd' }) : null, t, h('span', { class: 'n' }, fa(counts[k] || 0))))].filter(Boolean));
   genreChips(shows);
   const list = shows.filter(s => hasGenre(s) && (words.length ? words.every(w => s._hay.includes(w)) : (filter === 'all' || s.state === filter)));
-  main.replaceChildren(list.length ? h('div', { class: 'list' }, list.map(card)) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🔎'), 'چیزی پیدا نشد.'));
+  main.replaceChildren(...[!words.length && filter === 'all' && !genre ? sentBox() : null,
+    list.length ? h('div', { class: 'list' }, list.map(card)) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🔎'), 'چیزی پیدا نشد.')].filter(Boolean));
 }
 
 // genres: chips in the genre drawer (only those present in the current view, most common first)
@@ -495,6 +496,56 @@ function posterEl(m) {
       m.files_deleted ? h('span', { class: 'tag' }, '✓ دیده‌شده') : null),
     h('div', { class: 't ltr' }, m.title),
     genreTags(m.genres, 2));
+}
+
+// ------------------------------------------------------------------ links sent from the PC (for ADM)
+// The PC fetches download links (it holds the DigiMoviez / NineAnime logins) and queues them in its
+// snapshot; here they're handed to ADM: an Android intent opens ADM with the link, or copy / share.
+const ADM_PKG = { free: 'com.dv.adm', pro: 'com.dv.adm.pay' };
+const dismissed = () => LS.get('dismissedLinks', {});
+function sentLinks() {
+  const all = (snap && snap.phone_links) || {}, gone = dismissed();
+  return Object.entries(all).filter(([k, v]) => (v.items || []).length && gone[k] !== v.sent_at)
+    .sort((a, b) => b[1].sent_at - a[1].sent_at);
+}
+function admHref(url) {
+  const m = /^(https?):\/\/(.*)$/.exec(url);
+  if (!m) return url;
+  const pkg = ADM_PKG[LS.get('admPkg', 'free')] || ADM_PKG.free;
+  return `intent://${m[2]}#Intent;scheme=${m[1]};package=${pkg};S.browser_fallback_url=${encodeURIComponent(url)};end`;
+}
+async function copyLinks(urls) {
+  try { await navigator.clipboard.writeText(urls.join('\n')); toast(urls.length > 1 ? `${fa(urls.length)} لینک کپی شد؛ توی ADM «افزودن لینک» رو بزن` : 'لینک کپی شد'); }
+  catch { toast('کپی نشد'); }
+}
+async function shareLinks(urls, title) {
+  if (navigator.share) { try { await navigator.share({ title, text: urls.join('\n') }); return; } catch { return; } }
+  copyLinks(urls);
+}
+function linkGroup(key, v, withTitle) {
+  const urls = v.items.map(i => i.url);
+  const left = (v.sent_at + 4 * 86400 - now());
+  return h('div', { class: 'lgroup' },
+    h('div', { class: 'lhead' },
+      withTitle ? h('b', { class: 'ltr' }, v.title) : h('b', {}, '📥 لینک‌های فرستاده‌شده'),
+      h('span', { class: 'meta' }, `${relTime(v.sent_at)} · ${left > 0 ? 'تا ' + relTime(v.sent_at + 4 * 86400) + ' معتبره' : 'شاید منقضی شده باشه'}`)),
+    h('div', { class: 'lrows' }, v.items.map(i => h('div', { class: 'lrow' },
+      h('div', { class: 'lt' }, h('span', {}, i.label || v.title), h('small', {}, [i.quality, i.size, i.dubbed ? 'دوبله' : null].filter(Boolean).join(' · '))),
+      h('a', { class: 'adm', href: admHref(i.url), title: i.file }, '⬇ ADM'),
+      h('button', { class: 'lc', 'aria-label': 'کپی لینک', onclick: () => copyLinks([i.url]) }, icon('copy', 14))))),
+    h('div', { class: 'lact' },
+      urls.length > 1 ? h('button', { class: 'btn primary', onclick: () => copyLinks(urls) }, `📋 کپی همه (${fa(urls.length)})`) : null,
+      h('button', { class: 'btn', onclick: () => shareLinks(urls, v.title) }, '📤 اشتراک'),
+      h('button', { class: 'btn', onclick: () => { const d = dismissed(); d[key] = v.sent_at; LS.set('dismissedLinks', d); render(); if (detail) renderDetail(); } }, 'برداشتن')));
+}
+function sentBox() {
+  const list = sentLinks();
+  if (!list.length) return null;
+  const open = LS.get('sentOpen', true);
+  return h('div', { class: 'sent-box' },
+    h('button', { class: 'sent-toggle', onclick: () => { LS.set('sentOpen', !open); render(); } },
+      h('span', {}, `📥 لینک‌های فرستاده‌شده از سیستم`), h('span', { class: 'n' }, fa(list.length)), h('span', {}, open ? '▲' : '▼')),
+    open ? list.map(([k, v]) => linkGroup(k, v, true)) : null);
 }
 
 // ------------------------------------------------------------------ schedule
@@ -608,6 +659,7 @@ function renderDetail() {
       h('button', { class: 'step', onclick: () => setOverride(s, s.pos.idx, s.pos.episode - 1) }, '−'),
       s.override || s.mine ? h('button', { class: 'step txt', onclick: () => clearOverride(s) }, '↺ خودکار') : null,
       s.new ? h('button', { class: 'step txt', onclick: e => copyNext(s, e.currentTarget) }, '📋 کپی اسم قسمت بعد') : null),
+    (() => { const v = ((snap && snap.phone_links) || {})[s.sid]; return v && (v.items || []).length ? h('div', { class: 'box' }, linkGroup(s.sid, v, false)) : null; })(),
     h('div', { class: 'box' }, h('h3', {}, 'کجا تا کجا'),
       sp.length ? h('div', { class: 'srcs' }, sp.map((x, i) => {
         const mine = owned.filter(e => e.source === x.source).map(e => e.episode);
@@ -641,6 +693,7 @@ function openMovie(m) {
         genreTags(m.genres),
         m.files_deleted ? h('div', { class: 'badges', style: 'margin-top:6px' }, h('span', { class: 'badge new' }, '✓ دیده‌شده')) : null,
         m.url ? h('a', { href: m.url, target: '_blank', rel: 'noopener', class: 'meta', style: 'display:inline-block; margin-top:6px' }, 'صفحه‌ی فیلم ↗') : null))),
+    (() => { const v = ((snap && snap.phone_links) || {})['mv:' + m.key]; return v && (v.items || []).length ? h('div', { class: 'box' }, linkGroup('mv:' + m.key, v, false)) : null; })(),
     h('div', { class: 'box' }, h('h3', {}, 'کجا دارمش'),
       m.files.length ? m.files.map(f => h('div', { class: 'copy' }, h('span', {}, srcLabel(f.source) + (f.size ? ' · ' + bytes(f.size) : '') + (f.mtime ? ' · ' + date(f.mtime) : '')),
         h('span', { class: 'f' }, f.file))) : h('div', { class: 'meta' }, 'دیده‌شده؛ فایلش برای آزاد کردن فضا پاک شده.')));
@@ -683,6 +736,10 @@ function renderMore() {
       h('div', { class: 'meta' }, 'توی ADM از منو، پشتیبان بگیر (فایل ADM.db). اینجا انتخابش کن تا بره توی Drive؛ دفعه‌ی بعد که کامپیوتر «آپدیت» کنه، دانلودهای گوشی وارد می‌شن.'),
       h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn primary', onclick: () => admInput.click() }, 'انتخاب فایل ADM.db')),
       admInput, admBar, admStatus),
+    h('div', { class: 'box' }, h('h3', {}, '⬇ دانلود با ADM'),
+      h('div', { class: 'meta' }, 'لینک‌هایی که از کامپیوتر می‌فرستی، با «⬇ ADM» مستقیم توی ADM باز می‌شن. نسخه‌ی ADM گوشیت:'),
+      h('div', { class: 'theme-picker', style: 'margin-top:8px' }, h('div', { class: 'seg' }, [['free', 'ADM معمولی'], ['pro', 'ADM Pro']].map(([k, t]) =>
+        h('button', { class: LS.get('admPkg', 'free') === k ? 'on' : '', onclick: () => { LS.set('admPkg', k); render(); } }, t))))),
     h('div', { class: 'box' }, h('h3', {}, 'اعلان قسمت جدید'),
       h('div', { class: 'meta' }, 'هر بار اپ رو باز کنی، پخش سریال‌ها بررسی می‌شه و اگه قسمت جدیدی اومده باشه خبرت می‌کنه.'),
       h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn', onclick: toggleNotify }, notifyOn ? 'خاموش کردن اعلان' : 'روشن کردن اعلان'))),
