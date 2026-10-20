@@ -7,7 +7,7 @@
  * reads the PC's live snapshot directly, for previewing.
  */
 'use strict';
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const $ = s => document.querySelector(s);
 const fa = n => (n ?? '').toLocaleString('fa-IR');
 const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
@@ -51,7 +51,7 @@ const IDB = {
 // ------------------------------------------------------------------ state
 let snap = null;                                  // newest PC snapshot
 let snapTime = 0;                                 // bridge: Drive modified time of that snapshot (ms)
-let phone = { machine: 'phone', overrides: {} };  // changes made on the phone
+let phone = { machine: 'phone', overrides: {}, wishlist: {} };  // changes made on the phone
 let live = LS.get('live', { al: {}, tm: {}, at: 0 });   // fresh airing data fetched by the phone
 let view = 'shows', filter = 'all', movieFilter = 'all', genre = '', detail = null;
 let shows = [];                                   // derived from snap + phone + live
@@ -233,9 +233,12 @@ async function sync(silent) {
 }
 
 function mergePhone(remote) {
-  for (const [sid, o] of Object.entries(remote.overrides || {})) {
-    const mine = phone.overrides[sid];
-    if (!mine || (o.updated || 0) > (mine.updated || 0)) phone.overrides[sid] = o;
+  for (const part of ['overrides', 'wishlist']) {
+    phone[part] = phone[part] || {};
+    for (const [k, o] of Object.entries(remote[part] || {})) {
+      const mine = phone[part][k];
+      if (!mine || (o.updated || 0) > (mine.updated || 0)) phone[part][k] = o;
+    }
   }
   LS.set('phone', phone);
 }
@@ -343,7 +346,7 @@ function notifyNew(list) {
 
 // ------------------------------------------------------------------ render
 const STATE = { new: 'قسمت جدید', behind: 'نیمه‌کاره', waiting: 'منتظر پخش', done: 'تموم‌شده', unknown: 'نامعلوم' };
-const FILTERS = [['all', 'همه'], ['new', 'قسمت جدید'], ['behind', 'نیمه‌کاره'], ['waiting', 'منتظر پخش'], ['done', 'تموم‌شده']];
+const FILTERS = [['all', 'همه'], ['new', 'قسمت جدید'], ['behind', 'نیمه‌کاره'], ['waiting', 'منتظر پخش'], ['done', 'تموم‌شده'], ['wish', '📌 خواهم دید']];
 let drawn = '';            // what the list showed last time: entrance animations only when that changes
 
 function setDrawer(id, open) {
@@ -375,7 +378,7 @@ function render() {
   if (view === 'schedule') { $('#chips').replaceChildren(); return main.replaceChildren(renderSchedule()); }
   const words = q.split(' ').filter(Boolean);
   if (view === 'movies') {
-    const all = snap.movies || [];
+    const all = (snap.movies || []).filter(m => !m.wish);
     genreChips(all);
     const mchip = (k, t, n) => h('button', { class: 'chip' + (movieFilter === k ? ' on' : ''), onclick: () => { movieFilter = k; render(); window.scrollTo(0, 0); } },
       t, h('span', { class: 'n' }, fa(n)));
@@ -384,13 +387,16 @@ function render() {
     const ms = all.filter(m => hasGenre(m) && (movieFilter === 'all' || (movieFilter === 'seen' ? m.files_deleted : m.files.length)) && (!words.length || words.every(w => norm([m.title, m.alt, m.year, ...(m.genres || []), ...m.files.map(f => f.file)].join(' ')).includes(w))));
     return main.replaceChildren(ms.length ? h('div', { class: 'posters' }, ms.map(posterEl)) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🎬'), 'فیلمی پیدا نشد.'));
   }
-  const counts = { all: shows.length };
-  for (const s of shows) counts[s.state] = (counts[s.state] || 0) + 1;
+  const wishMovies = (snap.movies || []).filter(m => m.wish && !wishGone(m.key));
+  const real = shows.filter(s => !s.wish);
+  const counts = { all: real.length, wish: shows.filter(s => s.wish && !wishGone(s.sid)).length + wishMovies.length + wishPending().length };
+  for (const s of real) counts[s.state] = (counts[s.state] || 0) + 1;
   $('#chips').replaceChildren(...[pinnedGenre(), ...FILTERS.map(([k, t]) => h('button', { class: 'chip st-' + k + (filter === k && !words.length ? ' on' : ''),
     onclick: () => { filter = k; $('#q').value = ''; render(); window.scrollTo(0, 0); } },
     k === 'new' ? h('i', { class: 'd' }) : null, t, h('span', { class: 'n' }, fa(counts[k] || 0))))].filter(Boolean));
   genreChips(shows);
-  const list = shows.filter(s => hasGenre(s) && (words.length ? words.every(w => s._hay.includes(w)) : (filter === 'all' || s.state === filter)));
+  if (filter === 'wish' && !words.length) return main.replaceChildren(renderWishPhone());
+  const list = shows.filter(s => hasGenre(s) && (words.length ? words.every(w => s._hay.includes(w)) : (!s.wish && (filter === 'all' || s.state === filter))));
   main.replaceChildren(...[!words.length && filter === 'all' && !genre ? sentBox() : null,
     list.length ? h('div', { class: 'list' }, list.map(card)) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🔎'), 'چیزی پیدا نشد.')].filter(Boolean));
 }
@@ -431,6 +437,7 @@ function statusBadge(s) {
 }
 // the short version that sits on the poster
 function posterBadge(s) {
+  if (s.wish) return h('span', { class: 'ov-badge' }, '📌 خواهم دید');
   if (s.state === 'new') return h('span', { class: 'ov-badge new' }, h('i'), `${fa(s.new)} جدید`);
   if (s.state === 'behind') return h('span', { class: 'ov-badge behind' }, h('i'), `${fa(s.new)} مونده`);
   if (s.state === 'waiting') return h('span', { class: 'ov-badge waiting' }, h('i'), s.upcoming ? relTime(s.upcoming.at) : 'فصل بعد');
@@ -480,7 +487,7 @@ function card(s) {
       h('div', { class: 'meter-row' }, total ? h('div', { class: 'meter' }, h('i', { style: `width:${pct}%` })) : h('div', { class: 'meter-gap' }),
         h('small', {}, [s.multi_season ? `فصل ${fa(seasonNum(p.label))}` : null, total ? `${fa(p.episode)}/${fa(total)}` : null].filter(Boolean).join(' · '))),
       h('div', { class: 'card-foot' },
-        h('div', { class: 'pos' + (pop ? ' pop' : '') }, 'تا ', h('b', {}, `قسمت ${fa(p.episode)}`)),
+        h('div', { class: 'pos' + (pop ? ' pop' : '') }, ...(s.wish ? ['هنوز شروع نکردی'] : ['تا ', h('b', {}, `قسمت ${fa(p.episode)}`)])),
         h('div', { class: 'stepper', onclick: stop },
           h('button', { 'aria-label': 'یه قسمت عقب‌تر', onclick: () => step(-1) }, icon('minus')),
           h('button', { class: 'plus', 'aria-label': 'یه قسمت جلوتر', onclick: () => step(1) }, icon('plus')),
@@ -547,6 +554,109 @@ function sentBox() {
     h('button', { class: 'sent-toggle', onclick: () => { LS.set('sentOpen', !open); render(); } },
       h('span', {}, `📥 لینک‌های فرستاده‌شده از سیستم`), h('span', { class: 'n' }, fa(list.length)), h('span', {}, open ? '▲' : '▼')),
     open ? list.map(([k, v]) => linkGroup(k, v, true)) : null);
+}
+
+// ------------------------------------------------------------------ «خواهم دید» (wishlist)
+// Shows and films added here (on the PC or on this phone) wait in their own list; a "+" or the first
+// downloaded file moves a show to the main list. The phone saves what it adds in state-phone.json;
+// the PC fills in the full show (seasons, episodes, links) from AniList / TVmaze.
+const wishGone = key => (phone.wishlist[key] || {}).removed;
+// added on this phone but not in the PC's snapshot yet
+function wishPending() {
+  const known = new Set([...shows.map(s => s.sid), ...((snap && snap.movies) || []).map(m => m.key)]);
+  return Object.entries(phone.wishlist || {}).filter(([k, w]) => !w.removed && !known.has(k));
+}
+function renderWishPhone() {
+  const ws = shows.filter(s => s.wish && !wishGone(s.sid));
+  const wm = ((snap && snap.movies) || []).filter(m => m.wish && !wishGone(m.key));
+  const pend = wishPending();
+  return h('div', {},
+    h('div', { class: 'wish-top' }, h('span', { class: 'meta' }, 'با «+» یا وقتی اولین فایلش پیدا بشه، خودش می‌ره توی لیست اصلی.'),
+      h('button', { class: 'btn primary', onclick: openWishAdd }, '➕ افزودن')),
+    !ws.length && !wm.length && !pend.length ? h('div', { class: 'empty' }, h('span', { class: 'big' }, '📌'), 'هنوز چیزی اضافه نکردی.') : null,
+    ws.length ? h('div', { class: 'list' }, ws.map(card)) : null,
+    wm.length ? [h('div', { class: 'section' }, 'سینمایی'), h('div', { class: 'posters' }, wm.map(posterEl))] : null,
+    pend.length ? [h('div', { class: 'section' }, 'تازه اضافه شده (بعد از همگام شدن با کامپیوتر کامل می‌شه)'),
+      h('div', { class: 'list' }, pend.map(([k, w]) => h('div', { class: 'card' },
+        h('div', { class: 'poster-col' }, coverEl(w.cover, w.title, 'cover')),
+        h('div', { class: 'cbody' }, h('div', { class: 'title ltr' }, w.title),
+          h('div', { class: 'meta' }, [KIND_FA[w.kind], faYear(w.year)].filter(Boolean).join(' · ')),
+          h('div', { class: 'card-foot' }, h('span', {}), h('button', { class: 'btn', onclick: e => { e.stopPropagation(); wishRemove(k); } }, '🗑 حذف'))))))] : null);
+}
+const KIND_FA = { anime: 'انیمه', series: 'سریال', movie: 'سینمایی' };
+function wishRemove(key) {
+  phone.wishlist[key] = { removed: true, updated: now() };
+  LS.set('phone', phone); queuePush(); render();
+  if ($('#sheet').open) closeSheet();
+  toast('از «خواهم دید» برداشته شد');
+}
+let wishKind = 'all';
+function openWishAdd() {
+  detail = { wish: true };
+  openSheet('➕ افزودن به «خواهم دید»');
+  const input = h('input', { type: 'search', placeholder: 'اسم انیمه، سریال یا فیلم…', enterkeyhint: 'search', class: 'wish-q' });
+  const res = h('div', { class: 'wish-res' });
+  const kinds = h('div', { class: 'seg' });
+  const drawKinds = () => kinds.replaceChildren(...[['all', 'همه'], ['anime', 'انیمه'], ['series', 'سریال'], ['movie', 'فیلم']].map(([k, t]) =>
+    h('button', { class: wishKind === k ? 'on' : '', onclick: () => { wishKind = k; drawKinds(); go(); } }, t)));
+  const go = async () => {
+    const q = input.value.trim();
+    if (!q) return;
+    res.replaceChildren(h('div', { class: 'meta' }, 'در حال جستجو…'));
+    const out = await discoverPhone(q, wishKind);
+    res.replaceChildren(...(out.length ? out.map(r => {
+      const have = shows.some(s => s.sid === r.key && !s.wish), wished = (phone.wishlist[r.key] && !phone.wishlist[r.key].removed) || shows.some(s => s.sid === r.key && s.wish);
+      const b = h('button', { class: 'btn' + (have || wished ? '' : ' primary'), disabled: have || wished ? '' : null }, have ? '✓ توی آرشیو' : wished ? '✓ اضافه شده' : '+ افزودن');
+      b.onclick = () => {
+        phone.wishlist[r.key] = { kind: r.kind, title: r.title, cover: r.cover, year: r.year, imdb: r.imdb, anilist: r.anilist,
+          url: r.url, added: now(), updated: now() };
+        LS.set('phone', phone); queuePush();
+        b.disabled = true; b.textContent = '✓ اضافه شد'; b.classList.remove('primary');
+        toast(`«${r.title}» رفت توی خواهم دید`);
+      };
+      return h('div', { class: 'wish-item' }, coverEl(r.cover, r.title, 'cover'),
+        h('div', { class: 'cbody' }, h('div', { class: 'title ltr' }, r.title), r.alt ? h('div', { class: 'alt ltr' }, r.alt) : null,
+          h('div', { class: 'meta' }, [KIND_FA[r.kind], r.year ? faYear(r.year) : null, r.info].filter(Boolean).join(' · ')), b));
+    }) : [h('div', { class: 'meta' }, r_err || 'چیزی پیدا نشد. اسم انگلیسی یا ژاپنی رو امتحان کن.')]));
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  drawKinds();
+  setBody(h('div', { class: 'box' }, input, h('div', { class: 'theme-picker', style: 'margin-top:10px' }, kinds),
+    h('div', { class: 'meta', style: 'margin-top:8px' }, 'انیمه از AniList، سریال از TVmaze، فیلم از IMDb.')), res);
+  setTimeout(() => input.focus(), 100);
+}
+let r_err = '';
+async function discoverPhone(q, kind) {
+  r_err = '';
+  const out = [];
+  const jobs = [];
+  if (kind === 'all' || kind === 'anime' || kind === 'movie') jobs.push((async () => {
+    const j = await (await fetch('https://graphql.anilist.co', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ query: 'query($q:String){Page(perPage:10){media(search:$q,type:ANIME,sort:SEARCH_MATCH){id format episodes seasonYear title{english romaji} coverImage{large}}}}', variables: { q } }) })).json();
+    for (const m of (j.data && j.data.Page.media) || []) {
+      const movie = m.format === 'MOVIE';
+      if ((kind === 'anime' && movie) || (kind === 'movie' && !movie)) continue;
+      out.push({ key: movie ? 'wm:al:' + m.id : 'al:' + m.id, kind: movie ? 'movie' : 'anime', title: m.title.english || m.title.romaji,
+        alt: m.title.english ? m.title.romaji : null, year: m.seasonYear, cover: m.coverImage && m.coverImage.large, anilist: movie ? m.id : null,
+        url: 'https://anilist.co/anime/' + m.id, info: [m.format, m.episodes ? fa(m.episodes) + ' قسمت' : null].filter(Boolean).join(' · ') });
+    }
+  })());
+  if (kind === 'all' || kind === 'series') jobs.push((async () => {
+    for (const hit of await (await fetch('https://api.tvmaze.com/search/shows?q=' + encodeURIComponent(q))).json()) {
+      const t = hit.show;
+      out.push({ key: 'tm:' + t.id, kind: 'series', title: t.name, year: t.premiered ? +t.premiered.slice(0, 4) : null,
+        cover: t.image && t.image.medium, url: t.url, info: [t.type, t.status].filter(Boolean).join(' · ') });
+    }
+  })());
+  if ((kind === 'all' || kind === 'movie') && !PC_PREVIEW) jobs.push((async () => {
+    try {
+      const j = await bridge('imdb_search', { q });
+      for (const m of j.items || []) out.push({ key: 'wm:imdb:' + m.id, kind: 'movie', title: m.title, year: m.year, cover: m.cover,
+        imdb: m.id, url: `https://www.imdb.com/title/${m.id}/`, info: m.stars });
+    } catch (e) { if (kind === 'movie') r_err = 'فیلم‌های غیرانیمه از IMDb خونده می‌شن و برای گوشی باید پل یه بار دوباره دیپلوی بشه (یا از کامپیوتر اضافه‌شون کن).'; }
+  })());
+  await Promise.all(jobs.map(p => p.catch(() => {})));
+  return out;
 }
 
 // ------------------------------------------------------------------ schedule
@@ -655,7 +765,10 @@ function renderDetail() {
         h('div', { class: 'badges', style: 'margin-top:6px' }, statusBadge(s), h('span', { class: 'badge' }, s.kind === 'anime' ? 'انیمه' : 'سریال')),
         genreTags(s.genres),
         s.url ? h('a', { href: s.url, target: '_blank', rel: 'noopener', class: 'meta', style: 'display:inline-block; margin-top:6px' }, 'صفحه‌ی سریال ↗') : null))),
-    h('div', { class: 'steps' },
+    s.wish ? h('div', { class: 'steps' },
+      h('button', { class: 'btn primary', onclick: () => setOverride(s, s.pos.idx, 1) }, '▶ شروع کردم (قسمت ۱)'),
+      h('button', { class: 'btn', onclick: () => wishRemove(s.sid) }, '🗑 حذف از خواهم دید')) : null,
+    s.wish ? null : h('div', { class: 'steps' },
       h('button', { class: 'step plus', onclick: () => setOverride(s, s.pos.idx, s.pos.episode + 1) }, '+'),
       h('button', { class: 'step', onclick: () => setOverride(s, s.pos.idx, s.pos.episode - 1) }, '−'),
       s.override || s.mine ? h('button', { class: 'step txt', onclick: () => clearOverride(s) }, '↺ خودکار') : null,
@@ -692,12 +805,14 @@ function openMovie(m) {
       h('div', { style: 'min-width:0' }, h('h2', { class: 'ltr' }, m.title), m.alt ? h('div', { class: 'alt ltr' }, m.alt) : null,
         h('div', { class: 'meta', style: 'margin-top:6px' }, [faYear(m.year), m.stars].filter(Boolean).join(' · ')),
         genreTags(m.genres),
-        m.files_deleted ? h('div', { class: 'badges', style: 'margin-top:6px' }, h('span', { class: 'badge new' }, '✓ دیده‌شده')) : null,
+        m.files_deleted || m.seen ? h('div', { class: 'badges', style: 'margin-top:6px' }, h('span', { class: 'badge new' }, '✓ دیده‌شده')) : null,
+        m.wish ? h('div', { class: 'row', style: 'margin-top:8px' }, h('span', { class: 'badge mine' }, '📌 خواهم دید'),
+          h('button', { class: 'btn', onclick: () => wishRemove(m.key) }, '🗑 حذف')) : null,
         m.url ? h('a', { href: m.url, target: '_blank', rel: 'noopener', class: 'meta', style: 'display:inline-block; margin-top:6px' }, 'صفحه‌ی فیلم ↗') : null))),
     (() => { const v = ((snap && snap.phone_links) || {})['mv:' + m.key]; return v && (v.items || []).length ? h('div', { class: 'box' }, linkGroup('mv:' + m.key, v, false)) : null; })(),
     h('div', { class: 'box' }, h('h3', {}, 'کجا دارمش'),
       m.files.length ? m.files.map(f => h('div', { class: 'copy' }, h('span', {}, srcLabel(f.source) + (f.size ? ' · ' + bytes(f.size) : '') + (f.mtime ? ' · ' + date(f.mtime) : '')),
-        h('span', { class: 'f' }, f.file))) : h('div', { class: 'meta' }, 'دیده‌شده؛ فایلش برای آزاد کردن فضا پاک شده.')));
+        h('span', { class: 'f' }, f.file))) : h('div', { class: 'meta' }, m.wish ? 'هنوز فایلش رو نداری؛ از کامپیوتر لینکش رو بفرست به گوشی.' : 'دیده‌شده؛ فایلش برای آزاد کردن فضا پاک شده.')));
 }
 
 // ------------------------------------------------------------------ more / settings
@@ -802,6 +917,7 @@ window.addEventListener('online', () => sync(true));
 (async function boot() {
   phone = LS.get('phone', phone);
   phone.overrides = phone.overrides || {};
+  phone.wishlist = phone.wishlist || {};
   if (!PC_PREVIEW) {
     const cached = await IDB.get('snap');
     if (cached) { snap = cached.snap; snapTime = cached.snapTime; }
