@@ -1,0 +1,133 @@
+/* Lost Memories themes, shared by the phone app and the PC app (which loads /m/theme.css).
+ * <html data-theme="amber|wine|neon|volt" data-mode="dark|light">, set by theme.js.
+ * From the Google Stitch designs: amber (main), wine (crimson + gold), neon (emerald + cyan), volt (lime + cobalt). */
+
+:root, [data-theme="amber"] {
+  --bg: #090b10; --panel: #121620; --panel-2: #1a202e; --panel-3: #202738; --line: #1e2434;
+  --text: #f3f4f6; --body: #d1d5db; --muted: #8b93a7;
+  --accent: #f59e0b; --accent-2: #fbbf24; --accent-soft: rgba(245, 158, 11, .16); --accent-glow: rgba(245, 158, 11, .35);
+  --on-accent: #090b10; --secondary: #6366f1; --secondary-soft: rgba(99, 102, 241, .16);
+  --grad: linear-gradient(135deg, #d97706, #f59e0b 55%, #fcd34d);
+  --new: #10b981; --new-soft: rgba(16, 185, 129, .16); --wait: #38bdf8; --wait-soft: rgba(56, 189, 248, .16);
+  --warn: #ef4444; --warn-soft: rgba(239, 68, 68, .16); --done: #8b93a7; --done-soft: rgba(139, 147, 167, .14);
+  --glass: rgba(9, 11, 16, .82); --shadow: 0 4px 20px -2px rgba(0, 0, 0, .5);
+  --r-sm: 8px; --r-md: 12px; --r-lg: 16px; --r-pill: 999px;
+  --ambient: none;
+  color-scheme: dark;
+}
+[data-theme="amber"][data-mode="light"] {
+  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #eef0f5; --panel-3: #e4e7ef; --line: #e2e5ee;
+  --text: #111827; --body: #374151; --muted: #64748b;
+  --accent: #d97706; --accent-2: #f59e0b; --accent-soft: #fef3c7; --accent-glow: rgba(217, 119, 6, .25);
+  --on-accent: #ffffff; --secondary: #4f46e5; --secondary-soft: #e0e7ff;
+  --grad: linear-gradient(135deg, #b45309, #d97706 55%, #f59e0b);
+}
+
+[data-theme="wine"] {
+  --bg: #0a0205; --panel: #16060d; --panel-2: #260a18; --panel-3: #2f0d1e; --line: #3d1226;
+  --text: #f8eedb; --body: #dfd2c0; --muted: #9a818c;
+  --accent: #ff2a5f; --accent-2: #f5a623; --accent-soft: rgba(255, 42, 95, .16); --accent-glow: rgba(255, 42, 95, .4);
+  --on-accent: #12040b; --secondary: #f5a623; --secondary-soft: rgba(245, 166, 35, .16);
+  --grad: linear-gradient(90deg, #f5a623, #ff2a5f);
+  --glass: rgba(10, 2, 5, .84); --shadow: 0 12px 36px -8px rgba(0, 0, 0, .8), inset 0 1px 0 rgba(255, 255, 255, .06);
+  --ambient: radial-gradient(1200px 500px at 100% -10%, rgba(255, 42, 95, .10), transparent 60%);
+  color-scheme: dark;
+}
+[data-theme="wine"][data-mode="light"] {
+  --bg: #fff5f6; --panel: #ffffff; --panel-2: #ffe4e8; --panel-3: #ffd5dc; --line: #fbcfd8;
+  --text: #3b0a1a; --body: #5b2333; --muted: #8a6b76;
+  --accent: #e11d48; --accent-2: #d98b10; --accent-soft: #ffe4e8; --accent-glow: rgba(225, 29, 72, .22);
+  --on-accent: #ffffff; --secondary: #b45309; --secondary-soft: #fef3c7;
+  --grad: linear-gradient(90deg, #d98b10, #e11d48);
+  --glass: rgba(255, 245, 246, .85); --shadow: 0 4px 18px -4px rgba(120, 20, 50, .18);
+  --ambient: none; color-scheme: light;
+}
+
+[data-theme="neon"] {
+  --bg: #06080c; --panel: #0d1117; --panel-2: #121824; --panel-3: #18202e; --line: #1b2633;
+  --text: #f3f4f6; --body: #d1d5db; --muted: #8b93a7;
+  --accent: #00f5a0; --accent-2: #00e5ff; --accent-soft: rgba(0, 245, 160, .13); --accent-glow: rgba(0, 245, 160, .45);
+  --on-accent: #06080c; --secondary: #7928ca; --secondary-soft: rgba(121, 40, 202, .18);
+  --grad: linear-gradient(90deg, #00f5a0, #00e5ff);
+  --glass: rgba(13, 17, 23, .72); --shadow: 0 8px 32px 0 rgba(0, 0, 0, .65), inset 0 0 0 1px rgba(0, 245, 160, .10);
+  --ambient: radial-gradient(700px 420px at 0% 0%, rgba(0, 245, 160, .09), transparent 60%),
+             radial-gradient(600px 500px at 100% 45%, rgba(121, 40, 202, .10), transparent 60%),
+             radial-gradient(600px 400px at 0% 100%, rgba(0, 229, 255, .07), transparent 60%);
+  --r-sm: 10px; --r-md: 14px; --r-lg: 20px;
+  color-scheme: dark;
+}
+[data-theme="neon"][data-mode="light"] {
+  --bg: #f2fbf7; --panel: #ffffff; --panel-2: #e3f7ee; --panel-3: #d3f1e3; --line: #c9ecdb;
+  --text: #062a1d; --body: #1f3d31; --muted: #557066;
+  --accent: #059669; --accent-2: #0891b2; --accent-soft: #d1fae5; --accent-glow: rgba(5, 150, 105, .25);
+  --on-accent: #ffffff; --secondary: #7c3aed; --secondary-soft: #ede9fe;
+  --grad: linear-gradient(90deg, #059669, #0891b2);
+  --glass: rgba(242, 251, 247, .8); --shadow: 0 6px 22px -6px rgba(5, 80, 60, .18);
+  --ambient: radial-gradient(700px 400px at 0% 0%, rgba(5, 150, 105, .08), transparent 60%);
+  color-scheme: light;
+}
+
+[data-theme="volt"] {
+  --bg: #050709; --panel: #111620; --panel-2: #0c0f15; --panel-3: #1a2130; --line: #1f2737;
+  --text: #e2e8f0; --body: #cbd5e1; --muted: #717f9a;
+  --accent: #ccff00; --accent-2: #a3e635; --accent-soft: rgba(204, 255, 0, .12); --accent-glow: rgba(204, 255, 0, .45);
+  --on-accent: #050709; --secondary: #2563eb; --secondary-soft: rgba(37, 99, 235, .18);
+  --grad: linear-gradient(90deg, #a3e635, #ccff00);
+  --glass: rgba(5, 7, 9, .88); --shadow: inset 0 1px 0 rgba(255, 255, 255, .06), inset 0 -1px 0 rgba(0, 0, 0, .8);
+  --r-sm: 4px; --r-md: 6px; --r-lg: 8px; --r-pill: 6px;
+  color-scheme: dark;
+}
+[data-theme="volt"][data-mode="light"] {
+  --bg: #f5f7f0; --panel: #ffffff; --panel-2: #eef2e4; --panel-3: #e2e8d3; --line: #d9e0c8;
+  --text: #11160a; --body: #2c3320; --muted: #5d6676;
+  --accent: #4d7c0f; --accent-2: #65a30d; --accent-soft: #ecfccb; --accent-glow: rgba(77, 124, 15, .25);
+  --on-accent: #ffffff; --secondary: #2563eb; --secondary-soft: #dbeafe;
+  --grad: linear-gradient(90deg, #4d7c0f, #65a30d);
+  --glass: rgba(245, 247, 240, .88); --shadow: 0 1px 2px rgba(0, 0, 0, .06);
+}
+
+/* light mode, shared */
+[data-mode="light"] {
+  --new: #059669; --new-soft: #d1fae5; --wait: #0284c7; --wait-soft: #e0f2fe;
+  --warn: #dc2626; --warn-soft: #fee2e2; --done: #64748b; --done-soft: #eef0f4;
+  color-scheme: light;
+}
+[data-theme="amber"][data-mode="light"] { --glass: rgba(246, 247, 249, .85); --shadow: 0 4px 16px -4px rgba(15, 23, 42, .12); }
+
+html { background: var(--bg); }
+body { background: var(--ambient), var(--bg); background-attachment: fixed; }
+
+/* ------------------------------------------------------------------ shared pieces */
+@keyframes cardIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes popIn { from { opacity: 0; transform: translate(-50%, 12px) scale(.96); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+@keyframes breathe { 0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, .6); } 50% { box-shadow: 0 0 0 5px rgba(16, 185, 129, 0); } }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes spin { to { transform: rotate(-360deg); } }
+.anim-in { animation: cardIn .42s cubic-bezier(.16, 1, .3, 1) both; }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--new); display: inline-block; flex: none; animation: breathe 2.4s infinite; }
+.live-dot.busy { background: var(--accent); animation: none; }
+.live-dot.off { background: var(--warn); animation: none; }
+/* progress bar with a soft moving sheen */
+.meter { height: 5px; background: var(--panel-2); border-radius: 99px; overflow: hidden; }
+.meter i { display: block; height: 100%; border-radius: 99px; transition: width .45s cubic-bezier(.22, 1, .36, 1);
+  background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--accent)); background-size: 200% 100%;
+  animation: shimmer 4s linear infinite; box-shadow: 0 0 10px var(--accent-glow); }
+[data-theme="volt"] .meter i { animation: none; background: var(--accent); }
+
+/* theme picker (built by theme.js) */
+.theme-picker .seg { display: inline-flex; background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-md); padding: 3px; gap: 2px; }
+.theme-picker .seg button { border: 0; background: transparent; color: var(--muted); padding: 6px 14px; border-radius: calc(var(--r-md) - 3px); font: inherit; font-size: 13px; cursor: pointer; }
+.theme-picker .seg button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 4px rgba(0, 0, 0, .25); font-weight: 700; }
+.theme-picker .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; margin-top: 10px; }
+.theme-picker .sw { border: 1.5px solid var(--line); background: var(--panel); border-radius: var(--r-md); padding: 8px; cursor: pointer;
+  text-align: right; font: inherit; color: var(--text); transition: border-color .2s, transform .15s; }
+.theme-picker .sw:active { transform: scale(.97); }
+.theme-picker .sw.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.theme-picker .sw .prev { height: 46px; border-radius: calc(var(--r-md) - 4px); position: relative; overflow: hidden; margin-bottom: 6px; }
+.theme-picker .sw .prev i { position: absolute; border-radius: 3px; }
+.theme-picker .sw b { font-size: 13px; display: block; }
+.theme-picker .sw span { font-size: 11px; color: var(--muted); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

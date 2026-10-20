@@ -1,9 +1,10 @@
 // Lost Memories service worker: the app works offline from its cached shell; posters are cached as they load.
-const SHELL = 'lm-shell-v2';
+const SHELL = 'lm-shell-v3';
 const IMAGES = 'lm-img-v1';
-const FILES = ['./', './index.html', './app.css', './app.js', './manifest.webmanifest',
+const FILES = ['./', './index.html', './theme.css', './theme.js', './app.css', './app.js', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png'];
-const IMAGE_HOSTS = ['s4.anilist.co', 'm.media-amazon.com', 'static.tvmaze.com'];
+const IMAGE_HOSTS = ['s4.anilist.co', 'm.media-amazon.com', 'static.tvmaze.com',
+  'fonts.googleapis.com', 'fonts.gstatic.com'];          // fonts too, so the app looks the same offline
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(SHELL).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));

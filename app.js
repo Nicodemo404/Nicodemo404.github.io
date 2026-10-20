@@ -7,7 +7,7 @@
  * reads the PC's live snapshot directly, for previewing.
  */
 'use strict';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const $ = s => document.querySelector(s);
 const fa = n => (n ?? '').toLocaleString('fa-IR');
 const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
@@ -53,7 +53,7 @@ let snap = null;                                  // newest PC snapshot
 let snapTime = 0;                                 // bridge: Drive modified time of that snapshot (ms)
 let phone = { machine: 'phone', overrides: {} };  // changes made on the phone
 let live = LS.get('live', { al: {}, tm: {}, at: 0 });   // fresh airing data fetched by the phone
-let view = 'shows', filter = 'all', genre = '', detail = null;
+let view = 'shows', filter = 'all', movieFilter = 'all', genre = '', detail = null;
 let shows = [];                                   // derived from snap + phone + live
 
 const conn = () => LS.get('conn', { url: '', key: '' });
@@ -90,8 +90,24 @@ function coverEl(url, title, cls) {
 let toastTimer;
 function toast(text) {
   const t = $('#toast');
-  t.textContent = text; t.hidden = false;
+  $('#toastText').textContent = text;
+  t.hidden = true; void t.offsetWidth; t.hidden = false;          // restart the slide-in
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2600);
+}
+// inline SVG icons (h() can't make SVG elements)
+const ICONS = {
+  plus: '<path d="M12 5v14M5 12h14"/>', minus: '<path d="M5 12h14"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/>',
+  check: '<path d="m4.5 12.75 6 6 9-13.5"/>', reset: '<path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/>',
+  bell: '<path d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0"/>',
+  alert: '<path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
+  palette: '<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.6-.7 1.6-1.7 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.7-1.7 1.7-1.7h2c3 0 5.5-2.5 5.5-5.5C22 6 17.5 2 12 2Z"/>',
+};
+function icon(name, size) {
+  const sp = document.createElement('span');
+  sp.style.display = 'inline-flex';
+  sp.innerHTML = `<svg viewBox="0 0 24 24" width="${size || 15}" height="${size || 15}" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
+  return sp;
 }
 function srcLabel(src) {
   const s = (snap && snap.sources || []).find(x => x.source === src);
@@ -186,6 +202,8 @@ async function sync(silent) {
   if (syncing) return;
   syncing = true;
   $('#syncBtn').classList.add('spin');
+  $('#syncDot').className = 'live-dot busy';
+  let ok = false;
   try {
     if (PC_PREVIEW) {
       snap = await (await fetch('/api/snapshot')).json();
@@ -201,13 +219,15 @@ async function sync(silent) {
     LS.set('lastSync', now());
     if (LS.get('dirty', false)) await push();
     derive(); render();
-    if (!silent) toast('به‌روز شد');
+    if (!silent) toast('اطلاعات به‌روز شد');
+    ok = true;
     checkLive();
   } catch (e) {
     showBanner('همگام‌سازی نشد: ' + (e.message || e) + ' (اطلاعات قبلی نشون داده می‌شه)', true);
   } finally {
     syncing = false;
     $('#syncBtn').classList.remove('spin');
+    $('#syncDot').className = 'live-dot' + (ok || PC_PREVIEW ? '' : ' off');
     updateSyncInfo();
   }
 }
@@ -256,10 +276,14 @@ function updateSyncInfo() {
   $('#syncInfo').textContent = parts.join(' · ') || 'هنوز همگام نشده';
 }
 
-function showBanner(text, warn) {
+function showBanner(text, warn, jumps) {
   const b = $('#banner');
   b.className = 'banner' + (warn ? ' warn' : '');
-  b.replaceChildren(text, h('button', { onclick: () => { b.hidden = true; } }, '×'));
+  const ic = icon(warn ? 'alert' : 'bell', 18);
+  ic.className = 'bell';
+  if (warn) ic.style.color = 'var(--warn)';
+  b.replaceChildren(h('div', { class: 'bhead' }, ic, h('span', {}, text), h('button', { class: 'bx', 'aria-label': 'بستن', onclick: () => { b.hidden = true; } }, '×')),
+    jumps && jumps.length ? h('div', { class: 'jumps' }, jumps.map(s => h('button', { class: 'ltr', onclick: () => openDetail(s) }, s.title, h('b', {}, '+' + fa(s.new))))) : null);
   b.hidden = false;
 }
 
@@ -310,7 +334,7 @@ async function checkLive(force) {
 
 function notifyNew(list) {
   const text = list.slice(0, 4).map(s => `${s.title} (${fa(s.new)})`).join('، ') + (list.length > 4 ? ' و…' : '');
-  showBanner('🔔 قسمت جدید اومده: ' + text);
+  showBanner(`قسمت جدید اومده برای ${fa(list.length)} سریال`, false, list.slice(0, 8));
   if (LS.get('notify', false) && 'Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker) {
     navigator.serviceWorker.ready.then(reg => reg.showNotification('Lost Memories: قسمت جدید', {
       body: text, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', lang: 'fa', dir: 'rtl', tag: 'new-episodes' })).catch(() => {});
@@ -320,53 +344,75 @@ function notifyNew(list) {
 // ------------------------------------------------------------------ render
 const STATE = { new: 'قسمت جدید', behind: 'نیمه‌کاره', waiting: 'منتظر پخش', done: 'تموم‌شده', unknown: 'نامعلوم' };
 const FILTERS = [['all', 'همه'], ['new', 'قسمت جدید'], ['behind', 'نیمه‌کاره'], ['waiting', 'منتظر پخش'], ['done', 'تموم‌شده']];
+let drawn = '';            // what the list showed last time: entrance animations only when that changes
+
+function setDrawer(id, open) {
+  $('#' + id).classList.toggle('open', open);
+  $(id === 'searchDrawer' ? '#searchToggle' : '#genreToggle').classList.toggle('on', open || (id === 'searchDrawer' ? !!$('#q').value : !!genre));
+}
 
 function render() {
   const q = norm($('#q').value);
-  $('#searchWrap').hidden = view === 'more' || view === 'schedule';
+  const listView = view === 'shows' || view === 'movies';
   $('.search').classList.toggle('has', !!q);
+  for (const id of ['#searchToggle', '#genreToggle']) $(id).hidden = !listView;
+  if (!listView) { setDrawer('searchDrawer', false); setDrawer('genreDrawer', false); }
+  $('#searchToggle').classList.toggle('on', $('#searchDrawer').classList.contains('open') || !!q);
+  $('#genreToggle').classList.toggle('on', $('#genreDrawer').classList.contains('open') || !!genre);
+  $('#genreDot').hidden = !genre;
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
   const main = $('#main');
+  const key = [view, filter, genre, q].join('|');
+  main.classList.toggle('quiet', key === drawn);
+  drawn = key;
   $('#genres').replaceChildren();
   if (view === 'more') { $('#chips').replaceChildren(); return main.replaceChildren(renderMore()); }
   if (!snap) {
     $('#chips').replaceChildren();
-    return main.replaceChildren(h('div', { class: 'empty' }, PC_PREVIEW ? 'در حال خوندن…' : 'هنوز اطلاعاتی نیومده. اگه اولین باره، از «بیشتر» اتصال رو تنظیم کن.'));
+    return main.replaceChildren(h('div', { class: 'empty' }, h('span', { class: 'big' }, '🎞'),
+      PC_PREVIEW ? 'در حال خوندن…' : 'هنوز اطلاعاتی نیومده. اگه اولین باره، از «بیشتر» اتصال رو تنظیم کن.'));
   }
   if (view === 'schedule') { $('#chips').replaceChildren(); return main.replaceChildren(renderSchedule()); }
   const words = q.split(' ').filter(Boolean);
   if (view === 'movies') {
-    $('#chips').replaceChildren();
     const all = snap.movies || [];
     genreChips(all);
-    const ms = all.filter(m => hasGenre(m) && (!words.length || words.every(w => norm([m.title, m.alt, m.year, ...(m.genres || []), ...m.files.map(f => f.file)].join(' ')).includes(w))));
-    return main.replaceChildren(ms.length ? h('div', { class: 'posters' }, ms.map(posterEl)) : h('div', { class: 'empty' }, 'فیلمی پیدا نشد.'));
+    const mchip = (k, t, n) => h('button', { class: 'chip' + (movieFilter === k ? ' on' : ''), onclick: () => { movieFilter = k; render(); window.scrollTo(0, 0); } },
+      t, h('span', { class: 'n' }, fa(n)));
+    $('#chips').replaceChildren(...[pinnedGenre(), mchip('all', 'همه‌ی فیلم‌ها', all.length),
+      mchip('seen', 'دیده‌شده', all.filter(m => m.files_deleted).length), mchip('have', 'فایلش هست', all.filter(m => m.files.length).length)].filter(Boolean));
+    const ms = all.filter(m => hasGenre(m) && (movieFilter === 'all' || (movieFilter === 'seen' ? m.files_deleted : m.files.length)) && (!words.length || words.every(w => norm([m.title, m.alt, m.year, ...(m.genres || []), ...m.files.map(f => f.file)].join(' ')).includes(w))));
+    return main.replaceChildren(ms.length ? h('div', { class: 'posters' }, ms.map(posterEl)) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🎬'), 'فیلمی پیدا نشد.'));
   }
   const counts = { all: shows.length };
   for (const s of shows) counts[s.state] = (counts[s.state] || 0) + 1;
-  $('#chips').replaceChildren(...FILTERS.map(([k, t]) => h('button', { class: 'chip' + (filter === k && !words.length ? ' on' : ''),
-    onclick: () => { filter = k; $('#q').value = ''; render(); window.scrollTo(0, 0); } }, t, h('span', { class: 'n' }, fa(counts[k] || 0)))));
+  $('#chips').replaceChildren(...[pinnedGenre(), ...FILTERS.map(([k, t]) => h('button', { class: 'chip st-' + k + (filter === k && !words.length ? ' on' : ''),
+    onclick: () => { filter = k; $('#q').value = ''; render(); window.scrollTo(0, 0); } },
+    k === 'new' ? h('i', { class: 'd' }) : null, t, h('span', { class: 'n' }, fa(counts[k] || 0))))].filter(Boolean));
   genreChips(shows);
   const list = shows.filter(s => hasGenre(s) && (words.length ? words.every(w => s._hay.includes(w)) : (filter === 'all' || s.state === filter)));
-  main.replaceChildren(list.length ? h('div', { class: 'list' }, list.map(card)) : h('div', { class: 'empty' }, 'چیزی پیدا نشد.'));
+  main.replaceChildren(list.length ? h('div', { class: 'list' }, list.map(card)) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🔎'), 'چیزی پیدا نشد.'));
 }
 
-// genres: a second chip row (only those present in the current view, most common first)
+// genres: chips in the genre drawer (only those present in the current view, most common first)
 const hasGenre = x => !genre || (x.genres || []).includes(genre);
 function genreChips(items) {
   const c = {};
   for (const x of items) for (const g of x.genres || []) c[g] = (c[g] || 0) + 1;
   const list = Object.entries(c).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'fa'));
-  if (!list.length) return;
   if (genre && !c[genre]) genre = '';
   $('#genres').replaceChildren(h('button', { class: 'chip' + (!genre ? ' on' : ''), onclick: () => pickGenre('') }, 'همه‌ی ژانرها'),
     ...list.map(([g, n]) => h('button', { class: 'chip' + (genre === g ? ' on' : ''), onclick: () => pickGenre(g) }, g, h('span', { class: 'n' }, fa(n)))));
-  const on = $('#genres .chip.on');
-  if (on && genre) on.scrollIntoView({ inline: 'center', block: 'nearest' });
+}
+// the active genre stays visible in the main chip row while the drawer is closed
+function pinnedGenre() {
+  if (!genre || $('#genreDrawer').classList.contains('open')) return null;
+  return h('button', { class: 'chip pinned', onclick: () => pickGenre(genre) }, '🎭 ' + genre, h('span', { class: 'x', 'aria-label': 'برداشتن فیلتر' }, '×'));
 }
 function pickGenre(g) {
   genre = genre === g ? '' : g;
   if ($('#sheet').open) closeSheet();
+  if (view !== 'shows' && view !== 'movies') view = 'shows';
   render(); window.scrollTo(0, 0);
 }
 function genreTags(list, max) {
@@ -382,6 +428,14 @@ function statusBadge(s) {
   if (s.state === 'done') return h('span', { class: 'badge done' }, 'تمومش کردی');
   return h('span', { class: 'badge' }, 'نامعلوم');
 }
+// the short version that sits on the poster
+function posterBadge(s) {
+  if (s.state === 'new') return h('span', { class: 'ov-badge new' }, h('i'), `${fa(s.new)} جدید`);
+  if (s.state === 'behind') return h('span', { class: 'ov-badge behind' }, h('i'), `${fa(s.new)} مونده`);
+  if (s.state === 'waiting') return h('span', { class: 'ov-badge waiting' }, h('i'), s.upcoming ? relTime(s.upcoming.at) : 'فصل بعد');
+  if (s.state === 'done') return h('span', { class: 'ov-badge' }, '✓ تموم');
+  return null;
+}
 const seasonNum = label => parseInt(String(label).replace(/^S/, '')) || 1;
 
 function nextName(s) {
@@ -394,11 +448,17 @@ function nextName(s) {
   return s.multi_season && s.kind !== 'anime' ? `${s.title} S${String(num).padStart(2, '0')}E${String(ep).padStart(2, '0')}`
     : s.multi_season && num > 1 ? `${s.title} Season ${num} ${ep}` : `${s.title} ${ep}`;
 }
-async function copyNext(s) {
+async function copyNext(s, btn) {
   const t = nextName(s);
   try { await navigator.clipboard.writeText(t); toast('کپی شد: ' + t); }
   catch { toast(t); }
+  if (btn) {                                         // brief ✓ on the button itself
+    const old = [...btn.childNodes];
+    btn.classList.add('ok'); btn.replaceChildren(icon('check', 13), 'کپی شد');
+    setTimeout(() => { btn.classList.remove('ok'); btn.replaceChildren(...old); }, 1500);
+  }
 }
+let popSid = null;          // the card whose number just changed gets a small "pop"
 
 function card(s) {
   const p = s.pos;
@@ -406,28 +466,35 @@ function card(s) {
   const pct = total ? Math.min(100, p.episode / total * 100) : 0;
   const alt = [...new Set([s.alt, s.native])].filter(t => t && t.toLowerCase() !== s.title.toLowerCase()).join(' · ');
   const stop = e => e.stopPropagation();
-  return h('div', { class: 'card', onclick: () => openDetail(s) },
-    coverEl(s.cover, s.title, 'cover'),
+  const step = d => { popSid = s.sid; if (navigator.vibrate) navigator.vibrate(10); setOverride(s, p.idx, p.episode + d); };
+  const pop = popSid === s.sid;
+  if (pop) setTimeout(() => { popSid = null; }, 0);
+  return h('div', { class: 'card st-' + s.state, onclick: () => openDetail(s) },
+    h('div', { class: 'poster-col' }, coverEl(s.cover, s.title, 'cover'), posterBadge(s)),
     h('div', { class: 'cbody' },
       h('div', { class: 'title ltr' }, s.title),
       alt ? h('div', { class: 'alt ltr' }, alt) : null,
       genreTags(s.genres, 3),
-      h('div', { class: 'pos' }, 'تا ', h('b', {}, `قسمت ${fa(p.episode)}`), s.multi_season ? ` · فصل ${fa(seasonNum(p.label))}` : '',
-        total ? h('span', { class: 'meta' }, ` از ${fa(total)}`) : null),
-      total ? h('div', { class: 'meter' }, h('i', { style: `width:${pct}%` })) : null,
-      h('div', { class: 'badges' }, statusBadge(s), s.mine ? h('span', { class: 'badge mine' }, 'تغییر گوشی') : s.override ? h('span', { class: 'badge mine' }, 'دستی') : null),
-      h('div', { class: 'steps', onclick: stop },
-        h('button', { class: 'step', 'aria-label': 'یه قسمت جلوتر', onclick: () => setOverride(s, p.idx, p.episode + 1) }, '+'),
-        h('button', { class: 'step', 'aria-label': 'یه قسمت عقب‌تر', onclick: () => setOverride(s, p.idx, p.episode - 1) }, '−'),
-        s.new ? h('button', { class: 'step txt', onclick: () => copyNext(s) }, '📋 قسمت بعد') : null)));
+      s.mine || s.override ? h('div', { class: 'badges' }, h('span', { class: 'badge mine' }, s.mine ? 'تغییر گوشی' : 'دستی')) : null,
+      h('div', { class: 'meter-row' }, total ? h('div', { class: 'meter' }, h('i', { style: `width:${pct}%` })) : h('div', { class: 'meter-gap' }),
+        h('small', {}, [s.multi_season ? `فصل ${fa(seasonNum(p.label))}` : null, total ? `${fa(p.episode)}/${fa(total)}` : null].filter(Boolean).join(' · '))),
+      h('div', { class: 'card-foot' },
+        h('div', { class: 'pos' + (pop ? ' pop' : '') }, 'تا ', h('b', {}, `قسمت ${fa(p.episode)}`)),
+        h('div', { class: 'stepper', onclick: stop },
+          h('button', { 'aria-label': 'یه قسمت عقب‌تر', onclick: () => step(-1) }, icon('minus')),
+          h('button', { class: 'plus', 'aria-label': 'یه قسمت جلوتر', onclick: () => step(1) }, icon('plus')),
+          s.new ? h('i', { class: 'sep' }) : null,
+          s.new ? h('button', { class: 'copy-next', title: 'کپی اسم قسمت بعد', onclick: e => copyNext(s, e.currentTarget) }, icon('copy', 13), 'قسمت بعد') : null))));
 }
 
 function posterEl(m) {
-  return h('button', { class: 'poster', onclick: () => openMovie(m) },
+  return h('div', { class: 'poster', role: 'button', tabindex: '0', onclick: () => openMovie(m) },
     h('div', { class: 'img' }, m.cover ? h('img', { class: 'img', src: m.cover, alt: '', loading: 'lazy', referrerpolicy: 'no-referrer',
-      onerror: e => e.target.remove() }) : '🎬', m.files_deleted ? h('span', { class: 'tag' }, 'دیده‌شده') : null),
-    h('div', { class: 't ltr' }, m.title), h('div', { class: 'y' }, faYear(m.year)),
-    (m.genres || []).length ? h('div', { class: 'g' }, m.genres.slice(0, 2).join(' · ')) : null);
+      onerror: e => e.target.remove() }) : '🎬',
+      m.year ? h('span', { class: 'yr' }, faYear(m.year)) : null,
+      m.files_deleted ? h('span', { class: 'tag' }, '✓ دیده‌شده') : null),
+    h('div', { class: 't ltr' }, m.title),
+    genreTags(m.genres, 2));
 }
 
 // ------------------------------------------------------------------ schedule
@@ -439,7 +506,7 @@ function renderSchedule() {
     }
   }
   items.sort((a, b) => a.at - b.at);
-  if (!items.length) return h('div', { class: 'empty' }, 'تا یه هفته‌ی دیگه قسمت جدیدی از سریال‌هات پخش نمی‌شه.');
+  if (!items.length) return h('div', { class: 'empty' }, h('span', { class: 'big' }, '📅'), 'تا یه هفته‌ی دیگه قسمت جدیدی از سریال‌هات پخش نمی‌شه.');
   const days = new Map();
   for (const it of items) {
     const d = new Date(it.at * 1000);
@@ -450,13 +517,16 @@ function renderSchedule() {
   const today = new Date().toDateString(), tomorrow = new Date(Date.now() + 86400000).toDateString();
   return h('div', {}, h('div', { class: 'section' }, 'قسمت‌هایی که تا یه هفته‌ی دیگه پخش می‌شن (به وقت گوشی)'),
     [...days.values()].map(({ d, list }) => h('div', { class: 'day' },
-      h('h3', {}, d.toDateString() === today ? 'امروز' : d.toDateString() === tomorrow ? 'فردا' : d.toLocaleDateString('fa-IR', { weekday: 'long' }),
-        h('span', {}, d.toLocaleDateString('fa-IR', { month: 'long', day: 'numeric' }))),
-      list.map(it => h('div', { class: 'slot', onclick: () => openDetail(it.s) },
+      h('h3', {}, h('b', { class: d.toDateString() === today ? 'today' : '' },
+        d.toDateString() === today ? 'امروز' : d.toDateString() === tomorrow ? 'فردا' : d.toLocaleDateString('fa-IR', { weekday: 'long' })),
+        h('span', {}, d.toLocaleDateString('fa-IR', { month: 'long', day: 'numeric' }) + ` · ${fa(list.length)} قسمت`)),
+      h('div', { class: 'slots' }, list.map(it => h('div', { class: 'slot', onclick: () => openDetail(it.s) },
         coverEl(it.s.cover, it.s.title, it.s.cover ? '' : 'ph'),
-        h('div', { class: 'time' }, new Date(it.at * 1000).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })),
-        h('div', { class: 'info' }, h('div', { class: 'ltr', style: 'text-align:right' }, it.s.title),
-          h('div', { class: 'meta' }, `قسمت ${fa(it.episode)}` + (it.s.multi_season ? ` · ${it.se.label}` : '') + ` · ${relTime(it.at)}`)))))));
+        h('div', { class: 'info' }, h('span', { class: 'ltr' }, it.s.title),
+          h('div', { class: 'meta' }, `قسمت ${fa(it.episode)}` + (it.s.multi_season ? ` · ${it.se.label}` : ''))),
+        h('div', { style: 'display:flex; flex-direction:column; align-items:flex-end; gap:4px' },
+          h('div', { class: 'time' }, new Date(it.at * 1000).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })),
+          h('span', { class: 'cd' }, relTime(it.at)))))))));
 }
 
 // ------------------------------------------------------------------ details
@@ -483,6 +553,15 @@ function closeSheet() { if ($('#sheet').open) history.back(); }
 window.addEventListener('popstate', () => { if ($('#sheet').open) { $('#sheet').close(); detail = null; } });
 
 function openDetail(s) { detail = { sid: s.sid, idx: s.pos.idx, ep: null }; openSheet(s.title); renderDetail(); }
+
+// blurred cover behind the top of a details sheet
+function hero(cover, ...kids) {
+  return h('div', { class: 'hero' }, cover ? h('div', { class: 'bgimg', style: `background-image:url("${cover.replace(/"/g, '')}")` }) : null, ...kids);
+}
+// how far a position is into the whole show (for the per-source bars)
+function absEp(s, idx, ep) {
+  return s.seasons.filter(x => x.idx < idx).reduce((a, x) => a + (x.episodes || x.aired || 0), 0) + ep;
+}
 
 function renderDetail() {
   if (!detail || detail.movie) return;
@@ -513,34 +592,40 @@ function renderDetail() {
       c.length ? c.map(x => h('div', { class: 'copy' }, h('span', {}, srcLabel(x.source) + (x.size ? ' · ' + bytes(x.size) : '') + (x.mtime ? ' · ' + date(x.mtime) : '')),
         h('span', { class: 'f' }, x.file))) : h('div', { class: 'meta' }, 'این قسمت رو هیچ‌جا نداری.'));
   }
+  const aired = s.seasons.reduce((a, x) => a + (x.aired || x.episodes || 0), 0);
+  const sp = s.source_progress || [];
 
   setBody(
-    h('div', { class: 'dhead' }, coverEl(s.cover, s.title, 'cover'),
+    hero(s.cover, h('div', { class: 'dhead' }, coverEl(s.cover, s.title, 'cover'),
       h('div', { style: 'min-width:0' },
         h('h2', { class: 'ltr' }, s.title), alt ? h('div', { class: 'alt ltr' }, alt) : null,
         h('div', { class: 'pos', style: 'margin-top:6px' }, 'تا ', h('b', {}, `قسمت ${fa(s.pos.episode)}`), s.multi_season ? ` · فصل ${fa(seasonNum(s.pos.label))}` : ''),
         h('div', { class: 'badges', style: 'margin-top:6px' }, statusBadge(s), h('span', { class: 'badge' }, s.kind === 'anime' ? 'انیمه' : 'سریال')),
-        (s.genres || []).length ? h('div', { style: 'margin-top:8px' }, genreTags(s.genres)) : null,
-        s.url ? h('a', { href: s.url, target: '_blank', rel: 'noopener', class: 'meta' }, 'صفحه‌ی سریال ↗') : null)),
-    h('div', { class: 'steps', style: 'margin-bottom:12px' },
-      h('button', { class: 'step', onclick: () => setOverride(s, s.pos.idx, s.pos.episode + 1) }, '+'),
+        genreTags(s.genres),
+        s.url ? h('a', { href: s.url, target: '_blank', rel: 'noopener', class: 'meta', style: 'display:inline-block; margin-top:6px' }, 'صفحه‌ی سریال ↗') : null))),
+    h('div', { class: 'steps' },
+      h('button', { class: 'step plus', onclick: () => setOverride(s, s.pos.idx, s.pos.episode + 1) }, '+'),
       h('button', { class: 'step', onclick: () => setOverride(s, s.pos.idx, s.pos.episode - 1) }, '−'),
       s.override || s.mine ? h('button', { class: 'step txt', onclick: () => clearOverride(s) }, '↺ خودکار') : null,
-      s.new ? h('button', { class: 'step txt', onclick: () => copyNext(s) }, '📋 کپی اسم قسمت بعد') : null),
+      s.new ? h('button', { class: 'step txt', onclick: e => copyNext(s, e.currentTarget) }, '📋 کپی اسم قسمت بعد') : null),
     h('div', { class: 'box' }, h('h3', {}, 'کجا تا کجا'),
-      (s.source_progress || []).length ? s.source_progress.map((sp, i) => {
-        const mine = owned.filter(e => e.source === sp.source).map(e => e.episode);
-        return h('div', { class: 'prog' + (i === 0 ? ' lead' : '') }, h('span', { class: 'who' }, (i === 0 && s.source_progress.length > 1 ? '★ ' : '') + srcLabel(sp.source)),
-          h('span', {}, `تا قسمت ${fa(sp.episode)}` + (s.multi_season ? ` (${sp.label})` : '')),
-          h('span', { class: 'r' }, mine.length ? 'این فصل: ' + ranges(mine) : 'از این فصل چیزی نداره'));
-      }) : h('div', { class: 'meta' }, 'فایل‌هاش برای آزاد کردن فضا پاک شده؛ جایی که رسیده بودی حفظ شده.')),
+      sp.length ? h('div', { class: 'srcs' }, sp.map((x, i) => {
+        const mine = owned.filter(e => e.source === x.source).map(e => e.episode);
+        const pct = aired ? Math.min(100, absEp(s, x.idx, x.episode) / aired * 100) : 0;
+        return h('div', { class: 'src-card' + (i === 0 && sp.length > 1 ? ' lead' : '') },
+          h('div', { class: 'top' }, h('span', { class: 'who' }, srcLabel(x.source)),
+            i === 0 && sp.length > 1 ? h('span', { class: 'star' }, '★ جلوترین') : null,
+            h('span', {}, `تا قسمت ${fa(x.episode)}` + (s.multi_season ? ` (${x.label})` : ''))),
+          h('div', { class: 'meter' }, h('i', { style: `width:${pct}%` })),
+          h('div', { class: 'r' }, mine.length ? 'این فصل: ' + ranges(mine) : 'از این فصل چیزی نداره'));
+      })) : h('div', { class: 'meta' }, 'فایل‌هاش برای آزاد کردن فضا پاک شده؛ جایی که رسیده بودی حفظ شده.')),
     s.seasons.length > 1 ? h('div', { class: 'seasons' }, s.seasons.map(x => h('button', { class: x.idx === se.idx ? 'on' : '',
       onclick: () => { detail.idx = x.idx; detail.ep = null; renderDetail(); } }, x.label + (x.episodes ? ` · ${fa(x.episodes)}` : '')))) : null,
     h('div', { class: 'meta' }, `دارم: ${fa(Object.keys(byEp).length)} از ${fa(total)}` + (missing.length ? ` · ندارم: ${ranges(missing)}` : '')),
     h('div', { class: 'legend' },
       h('span', {}, h('i', { style: 'background:var(--accent)' }), 'روی کامپیوتر'),
       h('span', {}, h('i', { style: 'background:var(--accent-soft);border:1px solid var(--accent)' }), 'فقط گوشی / تلگرام'),
-      h('span', {}, h('i', { style: 'border:1px dashed var(--line)' }), 'ندارم'),
+      h('span', {}, h('i', { style: 'border:1px dashed var(--muted)' }), 'ندارم'),
       h('span', {}, h('i', { style: 'width:7px;height:7px;border-radius:50%;background:var(--new)' }), 'دیده‌شده')),
     total ? h('div', { class: 'tiles' }, tiles) : h('div', { class: 'empty' }, 'از این فصل چیزی نیست.'),
     panel);
@@ -550,12 +635,12 @@ function openMovie(m) {
   detail = { movie: m.key };
   openSheet(m.title);
   setBody(
-    h('div', { class: 'dhead' }, coverEl(m.cover, '🎬', 'cover'),
+    hero(m.cover, h('div', { class: 'dhead' }, coverEl(m.cover, '🎬', 'cover'),
       h('div', { style: 'min-width:0' }, h('h2', { class: 'ltr' }, m.title), m.alt ? h('div', { class: 'alt ltr' }, m.alt) : null,
         h('div', { class: 'meta', style: 'margin-top:6px' }, [faYear(m.year), m.stars].filter(Boolean).join(' · ')),
-        (m.genres || []).length ? h('div', { style: 'margin:6px 0' }, genreTags(m.genres)) : null,
-        m.files_deleted ? h('span', { class: 'badge done' }, 'دیده‌شده') : null,
-        m.url ? h('div', {}, h('a', { href: m.url, target: '_blank', rel: 'noopener', class: 'meta' }, 'صفحه‌ی فیلم ↗')) : null)),
+        genreTags(m.genres),
+        m.files_deleted ? h('div', { class: 'badges', style: 'margin-top:6px' }, h('span', { class: 'badge new' }, '✓ دیده‌شده')) : null,
+        m.url ? h('a', { href: m.url, target: '_blank', rel: 'noopener', class: 'meta', style: 'display:inline-block; margin-top:6px' }, 'صفحه‌ی فیلم ↗') : null))),
     h('div', { class: 'box' }, h('h3', {}, 'کجا دارمش'),
       m.files.length ? m.files.map(f => h('div', { class: 'copy' }, h('span', {}, srcLabel(f.source) + (f.size ? ' · ' + bytes(f.size) : '') + (f.mtime ? ' · ' + date(f.mtime) : '')),
         h('span', { class: 'f' }, f.file))) : h('div', { class: 'meta' }, 'دیده‌شده؛ فایلش برای آزاد کردن فضا پاک شده.')));
@@ -579,6 +664,7 @@ function renderMore() {
   admInput.addEventListener('change', () => uploadAdm(admInput.files[0], admBar, admStatus));
   const notifyOn = LS.get('notify', false) && 'Notification' in window && Notification.permission === 'granted';
   return h('div', {},
+    h('div', { class: 'box' }, h('h3', {}, icon('palette', 18), 'ظاهر و تم برنامه'), LMTheme.picker()),
     PC_PREVIEW ? h('div', { class: 'box' }, h('h3', {}, 'پیش‌نمایش روی کامپیوتر'),
       h('div', { class: 'meta' }, 'این صفحه از روی کامپیوتر باز شده و اطلاعات رو مستقیم از همین سیستم می‌خونه. تغییرات اینجا فقط توی همین مرورگر می‌مونه.')) :
       h('div', { class: 'box' }, h('h3', {}, 'اتصال به اطلاعات'),
@@ -636,7 +722,19 @@ document.querySelectorAll('#nav button').forEach(b => b.addEventListener('click'
   view = b.dataset.view; render(); window.scrollTo(0, 0);
 }));
 $('#q').addEventListener('input', () => render());
-$('#qClear').addEventListener('click', () => { $('#q').value = ''; render(); });
+$('#qClear').addEventListener('click', () => { $('#q').value = ''; render(); $('#q').focus(); });
+$('#searchToggle').addEventListener('click', () => {
+  const open = !$('#searchDrawer').classList.contains('open');
+  setDrawer('searchDrawer', open);
+  if (open) setTimeout(() => $('#q').focus(), 60);
+  else if ($('#q').value) { $('#q').value = ''; render(); }
+});
+$('#genreToggle').addEventListener('click', () => { setDrawer('genreDrawer', !$('#genreDrawer').classList.contains('open')); render(); });
+document.addEventListener('keydown', e => {
+  if (e.key === '/' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName) && (view === 'shows' || view === 'movies')) {
+    e.preventDefault(); setDrawer('searchDrawer', true); $('#q').focus();
+  }
+});
 $('#syncBtn').addEventListener('click', () => sync());
 $('#sheetClose').addEventListener('click', closeSheet);
 $('#sheet').addEventListener('cancel', e => { e.preventDefault(); closeSheet(); });
