@@ -7,7 +7,7 @@
  * reads the PC's live snapshot directly, for previewing.
  */
 'use strict';
-const VERSION = '1.4.3';
+const VERSION = '1.4.4';
 const $ = s => document.querySelector(s);
 const fa = n => (n ?? '').toLocaleString('fa-IR');
 const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
@@ -286,8 +286,9 @@ function showBanner(text, warn, jumps) {
   const ic = icon(warn ? 'alert' : 'bell', 18);
   ic.className = 'bell';
   if (warn) ic.style.color = 'var(--warn)';
-  b.replaceChildren(h('div', { class: 'bhead' }, ic, h('span', {}, text), h('button', { class: 'bx', 'aria-label': 'بستن', onclick: () => { b.hidden = true; } }, '×')),
-    jumps && jumps.length ? h('div', { class: 'jumps' }, jumps.map(s => h('button', { class: 'ltr', onclick: () => openDetail(s) }, s.title, h('b', {}, '+' + fa(s.new))))) : null);
+  // (replaceChildren would print a null as the text "null")
+  b.replaceChildren(...[h('div', { class: 'bhead' }, ic, h('span', {}, text), h('button', { class: 'bx', 'aria-label': 'بستن', onclick: () => { b.hidden = true; } }, '×')),
+    jumps && jumps.length ? h('div', { class: 'jumps' }, jumps.map(s => h('button', { class: 'ltr', onclick: () => openDetail(s) }, s.title, h('b', {}, '+' + fa(s.new))))) : null].filter(Boolean));
   b.hidden = false;
 }
 
