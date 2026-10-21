@@ -7,7 +7,7 @@
  * reads the PC's live snapshot directly, for previewing.
  */
 'use strict';
-const VERSION = '1.4.2';
+const VERSION = '1.4.3';
 const $ = s => document.querySelector(s);
 const fa = n => (n ?? '').toLocaleString('fa-IR');
 const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
@@ -304,16 +304,21 @@ async function checkLive(force) {
     } else if (prov === 'tm' && (s.state === 'new' || s.state === 'waiting' || s.show_status === 'Running')) tmIds.add(id);
   }
   const before = Object.fromEntries(shows.map(s => [s.sid, s.new]));
+  let alDown = false;
   try {
-    const ids = [...alIds];
-    for (let i = 0; i < ids.length; i += 50) {
-      const r = await fetch('https://graphql.anilist.co', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: JSON.stringify({ query: 'query($ids:[Int]){Page(perPage:50){media(id_in:$ids,type:ANIME){id status episodes nextAiringEpisode{episode airingAt}}}}', variables: { ids: ids.slice(i, i + 50) } }) });
-      const j = await r.json();
-      for (const m of (j.data && j.data.Page.media) || []) {
-        live.al[m.id] = { status: m.status, episodes: m.episodes, next: m.nextAiringEpisode ? { episode: m.nextAiringEpisode.episode, at: m.nextAiringEpisode.airingAt } : null };
+    // AniList on its own: when it's down (it once switched its API off for days) the series still get checked
+    try {
+      const ids = [...alIds];
+      for (let i = 0; i < ids.length; i += 50) {
+        const r = await fetch('https://graphql.anilist.co', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ query: 'query($ids:[Int]){Page(perPage:50){media(id_in:$ids,type:ANIME){id status episodes nextAiringEpisode{episode airingAt}}}}', variables: { ids: ids.slice(i, i + 50) } }) });
+        const j = await r.json();
+        if (!j.data) throw new Error('AniList');
+        for (const m of j.data.Page.media || []) {
+          live.al[m.id] = { status: m.status, episodes: m.episodes, next: m.nextAiringEpisode ? { episode: m.nextAiringEpisode.episode, at: m.nextAiringEpisode.airingAt } : null };
+        }
       }
-    }
+    } catch { alDown = alIds.size > 0; }
     const tms = [...tmIds];
     for (let i = 0; i < tms.length; i += 4) {
       await Promise.all(tms.slice(i, i + 4).map(async id => {
@@ -334,6 +339,7 @@ async function checkLive(force) {
   derive(); render(); if (detail) renderDetail();
   const grew = shows.filter(s => s.new > (before[s.sid] || 0));
   if (grew.length) notifyNew(grew);
+  return alDown;
 }
 
 function notifyNew(list) {
@@ -531,18 +537,25 @@ async function shareLinks(urls, title) {
   if (navigator.share) { try { await navigator.share({ title, text: urls.join('\n') }); return; } catch { return; } }
   copyLinks(urls);
 }
+const openGroups = new Set();                     // sent-link groups the user expanded
 function linkGroup(key, v, withTitle) {
   const urls = v.items.map(i => i.url);
   const until = v.expires || v.sent_at + 4 * 86400;
   const left = until - now();
+  // the group header already says the title: rows keep only "فصل ۴ · قسمت ۱"
+  const label = i => withTitle && i.label && i.label.startsWith(v.title + ' · ') ? i.label.slice(v.title.length + 3) : (i.label || v.title);
+  const SHORT = 6, long = v.items.length > SHORT + 2 && !openGroups.has(key);
+  const items = long ? v.items.slice(0, SHORT) : v.items;
   return h('div', { class: 'lgroup' },
     h('div', { class: 'lhead' },
       withTitle ? h('b', { class: 'ltr' }, v.title) : h('b', {}, '📥 لینک‌های فرستاده‌شده'),
       h('span', { class: 'meta' }, `${relTime(v.sent_at)} · ${left > 0 ? 'لینک‌ها ' + relTime(until) + ' منقضی می‌شن' : 'لینک‌ها منقضی شدن؛ از کامپیوتر دوباره بفرست'}`)),
-    h('div', { class: 'lrows' }, v.items.map(i => h('div', { class: 'lrow' },
-      h('div', { class: 'lt' }, h('span', {}, i.label || v.title), h('small', {}, [i.quality, i.size, i.dubbed ? 'دوبله' : null].filter(Boolean).join(' · '))),
+    h('div', { class: 'lrows' }, items.map(i => h('div', { class: 'lrow' },
+      h('div', { class: 'lt' }, h('span', {}, label(i)), h('small', {}, [i.quality, i.size, i.dubbed ? 'دوبله' : null].filter(Boolean).join(' · '))),
       h('a', { class: 'adm', href: admHref(i.url), title: i.file }, '⬇ ADM'),
-      h('button', { class: 'lc', 'aria-label': 'کپی لینک', onclick: () => copyLinks([i.url]) }, icon('copy', 14))))),
+      h('button', { class: 'lc', 'aria-label': 'کپی لینک', onclick: () => copyLinks([i.url]) }, icon('copy', 14)))),
+      long ? h('button', { class: 'btn lmore', onclick: () => { openGroups.add(key); render(); if (detail) renderDetail(); } },
+        `نمایش همه (${fa(v.items.length)})`) : null),
     h('div', { class: 'lact' },
       urls.length > 1 ? h('button', { class: 'btn primary', onclick: () => copyLinks(urls) }, `📋 کپی همه (${fa(urls.length)})`) : null,
       h('button', { class: 'btn', onclick: () => shareLinks(urls, v.title) }, '📤 اشتراک'),
@@ -647,9 +660,13 @@ async function discoverPhone(q, kind) {
   r_err = '';
   const out = [];
   const jobs = [];
+  // a catalogue that doesn't answer is named (AniList once switched its API off for days), not passed off as "nothing found"
+  const down = name => e => { r_err = [r_err, `${name} فعلاً جواب نمی‌ده${e && e.message ? ' (' + e.message + ')' : ''}`].filter(Boolean).join(' · '); };
   if (kind === 'all' || kind === 'anime' || kind === 'movie') jobs.push((async () => {
-    const j = await (await fetch('https://graphql.anilist.co', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ query: 'query($q:String){Page(perPage:10){media(search:$q,type:ANIME,sort:SEARCH_MATCH){id format episodes seasonYear title{english romaji} coverImage{large}}}}', variables: { q } }) })).json();
+    const r = await fetch('https://graphql.anilist.co', { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ query: 'query($q:String){Page(perPage:10){media(search:$q,type:ANIME,sort:SEARCH_MATCH){id format episodes seasonYear title{english romaji} coverImage{large}}}}', variables: { q } }) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || !j.data) throw new Error((j.errors && j.errors[0] && j.errors[0].message) || 'HTTP ' + r.status);
     for (const m of (j.data && j.data.Page.media) || []) {
       const movie = m.format === 'MOVIE';
       if ((kind === 'anime' && movie) || (kind === 'movie' && !movie)) continue;
@@ -657,14 +674,17 @@ async function discoverPhone(q, kind) {
         alt: m.title.english ? m.title.romaji : null, year: m.seasonYear, cover: m.coverImage && m.coverImage.large, anilist: movie ? m.id : null,
         url: 'https://anilist.co/anime/' + m.id, info: [m.format, m.episodes ? fa(m.episodes) + ' قسمت' : null].filter(Boolean).join(' · ') });
     }
-  })());
+  })().catch(down('AniList')));
   if (kind === 'all' || kind === 'series') jobs.push((async () => {
-    for (const hit of await (await fetch('https://api.tvmaze.com/search/shows?q=' + encodeURIComponent(q))).json()) {
+    const r = await fetch('https://api.tvmaze.com/search/shows?q=' + encodeURIComponent(q));
+    if (r.status === 502) return;                   // TVmaze's way of saying "nothing found"
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    for (const hit of await r.json()) {
       const t = hit.show;
       out.push({ key: 'tm:' + t.id, kind: 'series', title: t.name, year: t.premiered ? +t.premiered.slice(0, 4) : null,
         cover: t.image && t.image.medium, url: t.url, info: [t.type, t.status].filter(Boolean).join(' · ') });
     }
-  })());
+  })().catch(down('TVmaze')));
   if ((kind === 'all' || kind === 'movie') && !PC_PREVIEW) jobs.push((async () => {
     try {
       const j = await bridge('imdb_search', { q });
@@ -869,7 +889,7 @@ function renderMore() {
         : LS.get('bridgeVer', 0) ? `${fa(LS.get('bridgeVer', 0))} — قدیمیه؛ Code.gs رو دوباره دیپلوی کن` : '—')),
       h('div', { class: 'row', style: 'margin-top:10px' },
         h('button', { class: 'btn', onclick: () => sync() }, 'همگام‌سازی'),
-        h('button', { class: 'btn', onclick: () => checkLive(true).then(() => toast('بررسی شد')) }, 'بررسی قسمت‌های جدید'))),
+        h('button', { class: 'btn', onclick: () => checkLive(true).then(alDown => toast(alDown ? 'سریال‌ها بررسی شد؛ AniList فعلاً جواب نمی‌ده و انیمه‌ها از اطلاعات کامپیوتر می‌آن' : 'بررسی شد')) }, 'بررسی قسمت‌های جدید'))),
     PC_PREVIEW ? null : h('div', { class: 'box' }, h('h3', {}, 'فرستادن پشتیبان ADM'),
       h('div', { class: 'meta' }, 'توی ADM از منو، پشتیبان بگیر (فایل ADM.db). اینجا انتخابش کن تا بره توی Drive؛ دفعه‌ی بعد که کامپیوتر «آپدیت» کنه، دانلودهای گوشی وارد می‌شن.'),
       h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn primary', onclick: () => admInput.click() }, 'انتخاب فایل ADM.db')),
