@@ -1,5 +1,5 @@
 // Lost Memories service worker: the app works offline from its cached shell; posters are cached as they load.
-const SHELL = 'lm-shell-v12';
+const SHELL = 'lm-shell-v13';
 const IMAGES = 'lm-img-v1';
 const FILES = ['./', './index.html', './theme.css', './theme.js', './app.css', './app.js', './manifest.webmanifest',
   './fonts.css', './icons.svg', './fonts/Vazirmatn-wght.woff2', './fonts/Inter-latin-wght.woff2', './fonts/Inter-latin-ext-wght.woff2',

@@ -7,7 +7,7 @@
  * reads the PC's live snapshot directly, for previewing.
  */
 'use strict';
-const VERSION = '1.5.0';
+const VERSION = '1.5.1';
 const $ = s => document.querySelector(s);
 const fa = n => (n ?? '').toLocaleString('fa-IR');
 const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
@@ -411,7 +411,7 @@ function render() {
       t, h('span', { class: 'n' }, fa(n)));
     $('#chips').replaceChildren(...[...pinnedChips(), mchip('all', 'همه‌ی فیلم‌ها', all.length),
       mchip('seen', 'دیده‌شده', all.filter(m => m.files_deleted).length), mchip('have', 'فایلش هست', all.filter(m => m.files.length).length)].filter(Boolean));
-    const ms = all.filter(m => hasGenre(m) && (movieFilter === 'all' || (movieFilter === 'seen' ? m.files_deleted : m.files.length)) && (!words.length || words.every(w => norm([m.title, m.alt, m.year, ...(m.genres || []), ...m.files.map(f => f.file)].join(' ')).includes(w))));
+    const ms = all.filter(m => hasGenre(m) && (movieFilter === 'all' || (movieFilter === 'seen' ? m.files_deleted : m.files.length)) && (!words.length || words.every(w => movieHay(m).includes(w))));
     return main.replaceChildren(ms.length ? h('div', { class: 'posters' }, ms.map(posterEl)) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🎬'), 'فیلمی پیدا نشد.'));
   }
   const wishMovies = (snap.movies || []).filter(m => m.wish && !wishGone(m.key));
@@ -421,13 +421,21 @@ function render() {
   $('#chips').replaceChildren(...[...pinnedChips(), ...FILTERS.map(([k, t]) => h('button', { class: 'chip st-' + k + (filter === k && !words.length ? ' on' : ''),
     onclick: () => { filter = k; $('#q').value = ''; render(); window.scrollTo(0, 0); } },
     k === 'new' ? h('i', { class: 'd' }) : null, t, h('span', { class: 'n' }, fa(counts[k] || 0))))].filter(Boolean));
-  genreChips(shows.filter(kindOk));
+  // with the type on «همه», films matching a search or a genre get their own section below (they stay out of
+  // the series list itself): a search for a film, or a film-only genre, must not look like "nothing found"
+  const allFilms = kind === 'all' ? (snap.movies || []).filter(m => !m.wish) : [];
+  genreChips([...shows.filter(s => kindOk(s) && (!s.wish || filter === 'wish')), ...allFilms]);
   if (filter === 'wish' && !words.length) return main.replaceChildren(renderWishPhone());
   const list = shows.filter(s => hasGenre(s) && kindOk(s) && (words.length ? words.every(w => s._hay.includes(w)) : (!s.wish && (filter === 'all' || s.state === filter))));
+  const films = words.length || genre ? allFilms.filter(m => hasGenre(m) && words.every(w => movieHay(m).includes(w))) : [];
   main.replaceChildren(...[!words.length ? sentStrip() : null,
-    list.length ? h('div', { class: 'list' }, list.map(card)) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🔎'), 'چیزی پیدا نشد.')].filter(Boolean));
+    list.length ? h('div', { class: 'list' }, list.map(card))
+      : films.length ? h('div', { class: 'meta', style: 'margin:4px 2px 0' }, 'سریالی پیدا نشد.')
+      : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🔎'), 'چیزی پیدا نشد.'),
+    films.length ? [h('div', { class: 'section' }, `سینمایی (${fa(films.length)})`), h('div', { class: 'posters' }, films.map(posterEl))] : null].flat().filter(Boolean));
 }
 
+const movieHay = m => m._hay || (m._hay = norm([m.title, m.alt, m.year, ...(m.genres || []), ...m.files.map(f => f.file)].join(' ')));
 // genres: chips in the genre drawer (only those present in the current view, most common first)
 const hasGenre = x => !genre || (x.genres || []).includes(genre);
 function genreChips(items) {
