@@ -7,7 +7,7 @@
  * reads the PC's live snapshot directly, for previewing.
  */
 'use strict';
-const VERSION = '1.4.4';
+const VERSION = '1.5.0';
 const $ = s => document.querySelector(s);
 const fa = n => (n ?? '').toLocaleString('fa-IR');
 const faYear = n => n ? Number(n).toLocaleString('fa-IR', { useGrouping: false }) : '';
@@ -55,6 +55,7 @@ let phone = { machine: 'phone', overrides: {}, wishlist: {} };  // changes made 
 let live = LS.get('live', { al: {}, tm: {}, at: 0 });   // fresh airing data fetched by the phone
 let view = 'shows', filter = 'all', movieFilter = 'all', genre = '', detail = null;
 let shows = [];                                   // derived from snap + phone + live
+let kind = LS.get('kind', 'all');                 // series view: all / anime / series (like the desktop's type buttons)
 
 const conn = () => LS.get('conn', { url: '', key: '' });
 
@@ -106,7 +107,8 @@ const ICONS = {
 function icon(name, size) {
   const sp = document.createElement('span');
   sp.style.display = 'inline-flex';
-  sp.innerHTML = `<svg viewBox="0 0 24 24" width="${size || 15}" height="${size || 15}" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
+  // the inline ones above, else the app's Lucide sprite (the same icons the desktop uses)
+  sp.innerHTML = `<svg viewBox="0 0 24 24" width="${size || 15}" height="${size || 15}" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || `<use href="icons.svg#${name}"/>`}</svg>`;
   return sp;
 }
 function srcLabel(src) {
@@ -359,19 +361,36 @@ let drawn = '';            // what the list showed last time: entrance animation
 
 function setDrawer(id, open) {
   $('#' + id).classList.toggle('open', open);
-  $(id === 'searchDrawer' ? '#searchToggle' : '#genreToggle').classList.toggle('on', open || (id === 'searchDrawer' ? !!$('#q').value : !!genre));
+  syncToggles();
 }
+// the filters drawer: type (series view only) and genre; an active one shows as a dot and as a chip
+const filtered = () => !!genre || (view === 'shows' && kind !== 'all');
+const kindOk = s => kind === 'all' || (kind === 'anime') === (s.kind === 'anime');
+function syncToggles() {
+  $('#searchToggle').classList.toggle('on', $('#searchDrawer').classList.contains('open') || !!$('#q').value);
+  $('#filterToggle').classList.toggle('on', $('#filterDrawer').classList.contains('open') || filtered());
+  $('#filterDot').hidden = !filtered();
+}
+function drawKind() {
+  $('#kindSeg').hidden = view !== 'shows';
+  $('#kindSeg').replaceChildren(...[['all', 'همه'], ['anime', 'انیمه'], ['series', 'سریال']].map(([k, t]) =>
+    h('button', { class: kind === k ? 'on' : '', onclick: () => setKind(k) }, t)));
+}
+function setKind(k) { kind = k; LS.set('kind', kind); render(); window.scrollTo(0, 0); }
 
 function render() {
   const q = norm($('#q').value);
   const listView = view === 'shows' || view === 'movies';
   $('.search').classList.toggle('has', !!q);
-  for (const id of ['#searchToggle', '#genreToggle']) $(id).hidden = !listView;
-  if (!listView) { setDrawer('searchDrawer', false); setDrawer('genreDrawer', false); }
-  $('#searchToggle').classList.toggle('on', $('#searchDrawer').classList.contains('open') || !!q);
-  $('#genreToggle').classList.toggle('on', $('#genreDrawer').classList.contains('open') || !!genre);
-  $('#genreDot').hidden = !genre;
+  for (const id of ['#searchToggle', '#filterToggle']) $(id).hidden = !listView;
+  if (!listView) { setDrawer('searchDrawer', false); setDrawer('filterDrawer', false); }
+  syncToggles();
+  drawKind();
   document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
+  const nl = sentLinks().length;                     // links waiting from the PC: a badge on «سریال‌ها»
+  $('#navLinks').hidden = !nl;
+  $('#navLinks').textContent = fa(nl);
+  $('#navWarn').hidden = !((snap && snap.health && snap.health.warnings) || []).length;
   const main = $('#main');
   const key = [view, filter, genre, q].join('|');
   main.classList.toggle('quiet', key === drawn);
@@ -390,22 +409,22 @@ function render() {
     genreChips(all);
     const mchip = (k, t, n) => h('button', { class: 'chip' + (movieFilter === k ? ' on' : ''), onclick: () => { movieFilter = k; render(); window.scrollTo(0, 0); } },
       t, h('span', { class: 'n' }, fa(n)));
-    $('#chips').replaceChildren(...[pinnedGenre(), mchip('all', 'همه‌ی فیلم‌ها', all.length),
+    $('#chips').replaceChildren(...[...pinnedChips(), mchip('all', 'همه‌ی فیلم‌ها', all.length),
       mchip('seen', 'دیده‌شده', all.filter(m => m.files_deleted).length), mchip('have', 'فایلش هست', all.filter(m => m.files.length).length)].filter(Boolean));
     const ms = all.filter(m => hasGenre(m) && (movieFilter === 'all' || (movieFilter === 'seen' ? m.files_deleted : m.files.length)) && (!words.length || words.every(w => norm([m.title, m.alt, m.year, ...(m.genres || []), ...m.files.map(f => f.file)].join(' ')).includes(w))));
     return main.replaceChildren(ms.length ? h('div', { class: 'posters' }, ms.map(posterEl)) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🎬'), 'فیلمی پیدا نشد.'));
   }
   const wishMovies = (snap.movies || []).filter(m => m.wish && !wishGone(m.key));
-  const real = shows.filter(s => !s.wish);
+  const real = shows.filter(s => !s.wish && kindOk(s));
   const counts = { all: real.length, wish: shows.filter(s => s.wish && !wishGone(s.sid)).length + wishMovies.length + wishPending().length };
   for (const s of real) counts[s.state] = (counts[s.state] || 0) + 1;
-  $('#chips').replaceChildren(...[pinnedGenre(), ...FILTERS.map(([k, t]) => h('button', { class: 'chip st-' + k + (filter === k && !words.length ? ' on' : ''),
+  $('#chips').replaceChildren(...[...pinnedChips(), ...FILTERS.map(([k, t]) => h('button', { class: 'chip st-' + k + (filter === k && !words.length ? ' on' : ''),
     onclick: () => { filter = k; $('#q').value = ''; render(); window.scrollTo(0, 0); } },
     k === 'new' ? h('i', { class: 'd' }) : null, t, h('span', { class: 'n' }, fa(counts[k] || 0))))].filter(Boolean));
-  genreChips(shows);
+  genreChips(shows.filter(kindOk));
   if (filter === 'wish' && !words.length) return main.replaceChildren(renderWishPhone());
-  const list = shows.filter(s => hasGenre(s) && (words.length ? words.every(w => s._hay.includes(w)) : (!s.wish && (filter === 'all' || s.state === filter))));
-  main.replaceChildren(...[!words.length && filter === 'all' && !genre ? sentBox() : null,
+  const list = shows.filter(s => hasGenre(s) && kindOk(s) && (words.length ? words.every(w => s._hay.includes(w)) : (!s.wish && (filter === 'all' || s.state === filter))));
+  main.replaceChildren(...[!words.length ? sentStrip() : null,
     list.length ? h('div', { class: 'list' }, list.map(card)) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '🔎'), 'چیزی پیدا نشد.')].filter(Boolean));
 }
 
@@ -419,10 +438,12 @@ function genreChips(items) {
   $('#genres').replaceChildren(h('button', { class: 'chip' + (!genre ? ' on' : ''), onclick: () => pickGenre('') }, 'همه‌ی ژانرها'),
     ...list.map(([g, n]) => h('button', { class: 'chip' + (genre === g ? ' on' : ''), onclick: () => pickGenre(g) }, g, h('span', { class: 'n' }, fa(n)))));
 }
-// the active genre stays visible in the main chip row while the drawer is closed
-function pinnedGenre() {
-  if (!genre || $('#genreDrawer').classList.contains('open')) return null;
-  return h('button', { class: 'chip pinned', onclick: () => pickGenre(genre) }, '🎭 ' + genre, h('span', { class: 'x', 'aria-label': 'برداشتن فیلتر' }, '×'));
+// active filters stay visible in the main chip row while the drawer is closed (tap = remove)
+function pinnedChips() {
+  if ($('#filterDrawer').classList.contains('open')) return [];
+  const x = () => h('span', { class: 'x', 'aria-label': 'برداشتن فیلتر' }, '×');
+  return [view === 'shows' && kind !== 'all' ? h('button', { class: 'chip pinned', onclick: () => setKind('all') }, kind === 'anime' ? 'انیمه' : 'سریال', x()) : null,
+    genre ? h('button', { class: 'chip pinned', onclick: () => pickGenre(genre) }, '🎭 ' + genre, x()) : null].filter(Boolean);
 }
 function pickGenre(g) {
   genre = genre === g ? '' : g;
@@ -555,22 +576,29 @@ function linkGroup(key, v, withTitle) {
       h('div', { class: 'lt' }, h('span', {}, label(i)), h('small', {}, [i.quality, i.size, i.dubbed ? 'دوبله' : null].filter(Boolean).join(' · '))),
       h('a', { class: 'adm', href: admHref(i.url), title: i.file }, '⬇ ADM'),
       h('button', { class: 'lc', 'aria-label': 'کپی لینک', onclick: () => copyLinks([i.url]) }, icon('copy', 14)))),
-      long ? h('button', { class: 'btn lmore', onclick: () => { openGroups.add(key); render(); if (detail) renderDetail(); } },
+      long ? h('button', { class: 'btn lmore', onclick: () => { openGroups.add(key); render(); refreshSheet(); } },
         `نمایش همه (${fa(v.items.length)})`) : null),
     h('div', { class: 'lact' },
       urls.length > 1 ? h('button', { class: 'btn primary', onclick: () => copyLinks(urls) }, `📋 کپی همه (${fa(urls.length)})`) : null,
       h('button', { class: 'btn', onclick: () => shareLinks(urls, v.title) }, '📤 اشتراک'),
-      h('button', { class: 'btn', onclick: () => { const d = dismissed(); d[key] = v.sent_at; LS.set('dismissedLinks', d); render(); if (detail) renderDetail(); } }, 'برداشتن')));
+      h('button', { class: 'btn', onclick: () => { const d = dismissed(); d[key] = v.sent_at; LS.set('dismissedLinks', d); render(); refreshSheet(); } }, 'برداشتن')));
 }
-function sentBox() {
+// one line at the top of the list; the links themselves open in a sheet (they used to fill the first screen)
+function sentStrip() {
   const list = sentLinks();
   if (!list.length) return null;
-  const open = LS.get('sentOpen', true);
-  return h('div', { class: 'sent-box' },
-    h('button', { class: 'sent-toggle', onclick: () => { LS.set('sentOpen', !open); render(); } },
-      h('span', {}, `📥 لینک‌های فرستاده‌شده از سیستم`), h('span', { class: 'n' }, fa(list.length)), h('span', {}, open ? '▲' : '▼')),
-    open ? list.map(([k, v]) => linkGroup(k, v, true)) : null);
+  const n = list.reduce((a, [, v]) => a + v.items.length, 0);
+  return h('button', { class: 'sent-strip', onclick: openSent }, icon('download', 17),
+    h('span', {}, `${fa(n)} لینک دانلود از سیستم`, h('small', {}, list.map(([, v]) => v.title).slice(0, 3).join('، ') + (list.length > 3 ? ' و…' : ''))),
+    h('b', {}, 'باز کردن'));
 }
+function openSent() { detail = { sent: true }; openSheet('لینک‌های فرستاده‌شده از سیستم'); renderSent(); }
+function renderSent() {
+  const list = sentLinks();
+  setBody(h('div', { class: 'meta', style: 'margin:12px 2px' }, '«ADM» لینک رو مستقیم توی ADM باز می‌کنه؛ «کپی همه» برای افزودن چندتا با هم. لینک‌ها چند روز بعد منقضی می‌شن.'),
+    list.length ? list.map(([k, v]) => h('div', { class: 'box' }, linkGroup(k, v, true))) : h('div', { class: 'empty' }, h('span', { class: 'big' }, '📥'), 'لینکی نمونده.'));
+}
+const refreshSheet = () => { if (!detail) return; if (detail.sent) renderSent(); else renderDetail(); };
 
 // ------------------------------------------------------------------ «خواهم دید» (wishlist)
 // Shows and films added here (on the PC or on this phone) wait in their own list; a "+" or the first
@@ -709,7 +737,12 @@ function renderSchedule() {
     }
   }
   items.sort((a, b) => a.at - b.at);
-  if (!items.length) return h('div', { class: 'empty' }, h('span', { class: 'big' }, '📅'), 'تا یه هفته‌ی دیگه قسمت جدیدی از سریال‌هات پخش نمی‌شه.');
+  const ready = shows.filter(s => s.state === 'new' && !s.wish);
+  const readyRow = ready.length ? h('div', { class: 'ready' },
+    h('div', { class: 'section' }, icon('sparkles', 14), ` قسمت جدیدش اومده (${fa(ready.length)} سریال)`),
+    h('div', { class: 'ready-row' }, ready.map(s => h('button', { class: 'rmini', onclick: () => openDetail(s) },
+      coverEl(s.cover, s.title, s.cover ? '' : 'ph'), h('span', { class: 'ltr' }, s.title), h('small', {}, `${fa(s.new)} قسمت جدید`))))) : null;
+  if (!items.length) return h('div', {}, readyRow, h('div', { class: 'empty' }, h('span', { class: 'big' }, '📅'), 'تا یه هفته‌ی دیگه قسمت جدیدی از سریال‌هات پخش نمی‌شه.'));
   const days = new Map();
   for (const it of items) {
     const d = new Date(it.at * 1000);
@@ -718,7 +751,7 @@ function renderSchedule() {
     days.get(key).list.push(it);
   }
   const today = new Date().toDateString(), tomorrow = new Date(Date.now() + 86400000).toDateString();
-  return h('div', {}, h('div', { class: 'section' }, 'قسمت‌هایی که تا یه هفته‌ی دیگه پخش می‌شن (به وقت گوشی)'),
+  return h('div', {}, readyRow, h('div', { class: 'section' }, 'تا یه هفته‌ی دیگه (به وقت گوشی)'),
     [...days.values()].map(({ d, list }) => h('div', { class: 'day' },
       h('h3', {}, h('b', { class: d.toDateString() === today ? 'today' : '' },
         d.toDateString() === today ? 'امروز' : d.toDateString() === tomorrow ? 'فردا' : d.toLocaleDateString('fa-IR', { weekday: 'long' })),
@@ -809,11 +842,12 @@ function renderDetail() {
     s.wish ? h('div', { class: 'steps' },
       h('button', { class: 'btn primary', onclick: () => setOverride(s, s.pos.idx, 1) }, '▶ شروع کردم (قسمت ۱)'),
       h('button', { class: 'btn', onclick: () => wishRemove(s.sid) }, '🗑 حذف از خواهم دید')) : null,
+    s.wish ? null : nextBar(s),
     s.wish ? null : h('div', { class: 'steps' },
-      h('button', { class: 'step plus', onclick: () => setOverride(s, s.pos.idx, s.pos.episode + 1) }, '+'),
-      h('button', { class: 'step', onclick: () => setOverride(s, s.pos.idx, s.pos.episode - 1) }, '−'),
-      s.override || s.mine ? h('button', { class: 'step txt', onclick: () => clearOverride(s) }, '↺ خودکار') : null,
-      s.new ? h('button', { class: 'step txt', onclick: e => copyNext(s, e.currentTarget) }, '📋 کپی اسم قسمت بعد') : null),
+      h('span', { class: 'meta' }, 'جایی که هستی:'),
+      h('button', { class: 'step plus', 'aria-label': 'یه قسمت جلوتر', onclick: () => setOverride(s, s.pos.idx, s.pos.episode + 1) }, '+'),
+      h('button', { class: 'step', 'aria-label': 'یه قسمت عقب‌تر', onclick: () => setOverride(s, s.pos.idx, s.pos.episode - 1) }, '−'),
+      s.override || s.mine ? h('button', { class: 'step txt', onclick: () => clearOverride(s) }, '↺ خودکار') : null),
     (() => { const v = ((snap && snap.phone_links) || {})[s.sid]; return v && (v.items || []).length ? h('div', { class: 'box' }, linkGroup(s.sid, v, false)) : null; })(),
     h('div', { class: 'box' }, h('h3', {}, 'کجا تا کجا'),
       sp.length ? h('div', { class: 'srcs' }, sp.map((x, i) => {
@@ -838,6 +872,38 @@ function renderDetail() {
     panel);
 }
 
+// the next episode in our numbering (a finished season rolls over to the next); null when the show is all seen
+function nextOf(s) {
+  const se = s.seasons.find(x => x.idx === s.pos.idx);
+  if (se && se.episodes && s.pos.episode + 1 > se.episodes) {
+    const nx = s.seasons.find(x => x.idx > s.pos.idx);
+    return nx ? { idx: nx.idx, episode: 1, label: nx.label } : null;
+  }
+  return { idx: s.pos.idx, episode: s.pos.episode + 1, label: se ? se.label : s.pos.label };
+}
+// what to do next: where that episode is, a link the PC sent for it, copy its name, "seen it"
+function nextBar(s) {
+  const n = nextOf(s);
+  if (!n) return h('div', { class: 'nextbar done' }, icon('check', 16), h('span', {}, 'همه‌ی قسمت‌ها رو دیدی.'));
+  const se = s.seasons.find(x => x.idx === n.idx) || {};
+  const aired = (se.aired || 0) >= n.episode || (!se.aired && !se.next);
+  const owned = (s.episodes_owned || []).filter(e => e.idx === n.idx && e.episode === n.episode);
+  const v = ((snap && snap.phone_links) || {})[s.sid];
+  // the PC labels a sent link "... · قسمت 7" (that source's numbering): only an unambiguous match gets a button
+  const hits = v && sentLinks().some(([k]) => k === s.sid) ? (v.items || []).filter(i => +((/قسمت (\d+)$/.exec(i.label || '') || [])[1]) === n.episode) : [];
+  const link = hits.length === 1 ? hits[0] : null;
+  const where = owned.length ? 'داری: ' + [...new Set(owned.map(e => srcLabel(e.source)))].join('، ')
+    : !aired ? (se.next && se.next.episode === n.episode ? 'پخش ' + relTime(se.next.at) : 'هنوز پخش نشده')
+    : link ? 'لینکش از سیستم اومده' : 'پخش شده؛ هنوز نداریش';
+  return h('div', { class: 'nextbar' + (aired && !owned.length ? ' fresh' : '') },
+    h('div', { class: 'nb-t' }, h('span', { class: 'meta' }, 'قسمت بعدی'),
+      h('b', {}, (s.multi_season ? `فصل ${fa(seasonNum(n.label))} · ` : '') + `قسمت ${fa(n.episode)}`), h('small', {}, where)),
+    h('div', { class: 'nb-acts' },
+      link ? h('a', { class: 'btn primary', href: admHref(link.url), title: link.file }, icon('download', 15), 'ADM') : null,
+      h('button', { class: 'btn', onclick: e => copyNext(s, e.currentTarget) }, icon('copy', 14), 'کپی اسم'),
+      aired ? h('button', { class: 'btn', onclick: () => setOverride(s, n.idx, n.episode) }, icon('check', 14), 'دیدمش') : null));
+}
+
 function openMovie(m) {
   detail = { movie: m.key };
   openSheet(m.title);
@@ -857,6 +923,16 @@ function openMovie(m) {
 }
 
 // ------------------------------------------------------------------ more / settings
+const moreOpen = () => LS.get('moreOpen', {});
+function moreSection(id, ic, title, status, open, ...body) {
+  const isOpen = moreOpen()[id] ?? open;
+  const d = h('details', { class: 'mbox', open: isOpen ? '' : null },
+    h('summary', {}, icon(ic, 18), h('b', {}, title), status ? h('span', { class: 'ms' }, status) : null, icon('chevron-down', 16)),
+    h('div', { class: 'mbody' }, ...body));
+  d.addEventListener('toggle', () => { const o = moreOpen(); o[id] = d.open; LS.set('moreOpen', o); });
+  return d;
+}
+const devName = n => n === 'phone' ? 'گوشی' : 'سیستم ' + n;
 function renderMore() {
   const c = conn();
   const url = h('input', { type: 'url', value: c.url, placeholder: 'https://script.google.com/macros/s/…/exec', inputmode: 'url' });
@@ -873,36 +949,45 @@ function renderMore() {
   const admStatus = h('div', { class: 'meta', style: 'margin-top:6px' });
   admInput.addEventListener('change', () => uploadAdm(admInput.files[0], admBar, admStatus));
   const notifyOn = LS.get('notify', false) && 'Notification' in window && Notification.permission === 'granted';
+  const H = (snap && snap.health) || null;
+  const bv = LS.get('bridgeVer', 0);
+  const kv = (k, v) => h('div', { class: 'kv' }, h('span', {}, k), h('span', {}, v));
+  const pkg = LS.get('admPkg', 'free');
   return h('div', {},
-    h('div', { class: 'box' }, h('h3', {}, icon('palette', 18), 'ظاهر و تم برنامه'), LMTheme.picker()),
-    PC_PREVIEW ? h('div', { class: 'box' }, h('h3', {}, 'پیش‌نمایش روی کامپیوتر'),
-      h('div', { class: 'meta' }, 'این صفحه از روی کامپیوتر باز شده و اطلاعات رو مستقیم از همین سیستم می‌خونه. تغییرات اینجا فقط توی همین مرورگر می‌مونه.')) :
-      h('div', { class: 'box' }, h('h3', {}, 'اتصال به اطلاعات'),
+    H && H.warnings.length ? h('div', { class: 'box warnbox' }, icon('triangle-alert', 18), h('div', {}, ...H.warnings.map(w =>
+      h('div', {}, h('b', {}, `اطلاعات ${devName(w.device)} ${fa(w.days)} روزه به Drive نرسیده.`),
+        h('div', { class: 'meta' }, 'اگه این چند روز اونجا کار کردی، Google Drive اون سیستم رو چک کن.'))))) : null,
+    PC_PREVIEW
+      ? moreSection('conn', 'smartphone', 'پیش‌نمایش روی کامپیوتر', null, false,
+        h('div', { class: 'meta' }, 'این صفحه از روی کامپیوتر باز شده و اطلاعات رو مستقیم از همین سیستم می‌خونه. تغییرات اینجا فقط توی همین مرورگر می‌مونه.'))
+      : moreSection('conn', 'external-link', 'اتصال به اطلاعات', c.url && c.key ? 'وصل' : 'تنظیم نشده', !(c.url && c.key),
         h('div', { class: 'meta' }, 'آدرس Web App و رمزی که موقع راه‌اندازی پل Apps Script نشون داده شد.'),
         h('label', {}, 'آدرس پل'), url, h('label', {}, 'رمز'), key,
         h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn primary', onclick: save }, 'ذخیره و امتحان')), status),
-    h('div', { class: 'box' }, h('h3', {}, 'وضعیت'),
-      h('div', { class: 'kv' }, h('span', {}, 'اطلاعات از'), h('span', {}, snap ? `سیستم ${snap.machine} · ${relTime(snap.written_at)}` : '—')),
-      h('div', { class: 'kv' }, h('span', {}, 'آخرین همگام‌سازی'), h('span', {}, LS.get('lastSync', 0) ? relTime(LS.get('lastSync', 0)) : '—')),
-      h('div', { class: 'kv' }, h('span', {}, 'بررسی زنده‌ی پخش'), h('span', {}, live.at ? relTime(live.at) : '—')),
-      h('div', { class: 'kv' }, h('span', {}, 'تغییرات گوشی'), h('span', {}, LS.get('dirty', false) ? 'در صف فرستادن' : 'فرستاده شده')),
-      PC_PREVIEW ? null : h('div', { class: 'kv' }, h('span', {}, 'نسخه‌ی پل'), h('span', {}, LS.get('bridgeVer', 0) >= BRIDGE_WANTED ? `${fa(LS.get('bridgeVer', 0))} ✓`
-        : LS.get('bridgeVer', 0) ? `${fa(LS.get('bridgeVer', 0))} — قدیمیه؛ Code.gs رو دوباره دیپلوی کن` : '—')),
+    moreSection('sync', 'refresh-cw', 'همگام‌سازی', LS.get('lastSync', 0) ? relTime(LS.get('lastSync', 0)) : null, false,
+      kv('اطلاعات از', snap ? `سیستم ${snap.machine} · ${relTime(snap.written_at)}` : '—'),
+      kv('تغییرات گوشی', LS.get('dirty', false) ? 'در صف فرستادن' : 'فرستاده شده'),
+      kv('بررسی زنده‌ی پخش', live.at ? relTime(live.at) : '—'),
+      ...(H ? H.devices.map(d => kv(devName(d.name), d.last ? relTime(d.last) + (d.stale ? ' ⚠' : '') : '—')) : []),
       h('div', { class: 'row', style: 'margin-top:10px' },
         h('button', { class: 'btn', onclick: () => sync() }, 'همگام‌سازی'),
         h('button', { class: 'btn', onclick: () => checkLive(true).then(alDown => toast(alDown ? 'سریال‌ها بررسی شد؛ AniList فعلاً جواب نمی‌ده و انیمه‌ها از اطلاعات کامپیوتر می‌آن' : 'بررسی شد')) }, 'بررسی قسمت‌های جدید'))),
-    PC_PREVIEW ? null : h('div', { class: 'box' }, h('h3', {}, 'فرستادن پشتیبان ADM'),
-      h('div', { class: 'meta' }, 'توی ADM از منو، پشتیبان بگیر (فایل ADM.db). اینجا انتخابش کن تا بره توی Drive؛ دفعه‌ی بعد که کامپیوتر «آپدیت» کنه، دانلودهای گوشی وارد می‌شن.'),
-      h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn primary', onclick: () => admInput.click() }, 'انتخاب فایل ADM.db')),
-      admInput, admBar, admStatus),
-    h('div', { class: 'box' }, h('h3', {}, '⬇ دانلود با ADM'),
-      h('div', { class: 'meta' }, 'لینک‌هایی که از کامپیوتر می‌فرستی، با «⬇ ADM» مستقیم توی ADM باز می‌شن. نسخه‌ی ADM گوشیت:'),
+    moreSection('look', 'palette', 'ظاهر و تم', null, false, LMTheme.picker()),
+    moreSection('adm', 'download', 'ADM (دانلود روی گوشی)', pkg === 'pro' ? 'ADM Pro' : 'ADM معمولی', false,
+      h('div', { class: 'meta' }, 'لینک‌هایی که از کامپیوتر می‌فرستی، با «ADM» مستقیم توی ADM باز می‌شن. نسخه‌ی ADM گوشیت:'),
       h('div', { class: 'theme-picker', style: 'margin-top:8px' }, h('div', { class: 'seg' }, [['free', 'ADM معمولی'], ['pro', 'ADM Pro']].map(([k, t]) =>
-        h('button', { class: LS.get('admPkg', 'free') === k ? 'on' : '', onclick: () => { LS.set('admPkg', k); render(); } }, t))))),
-    h('div', { class: 'box' }, h('h3', {}, 'اعلان قسمت جدید'),
+        h('button', { class: pkg === k ? 'on' : '', onclick: () => { LS.set('admPkg', k); render(); } }, t)))),
+      PC_PREVIEW ? null : h('div', {}, h('label', {}, 'فرستادن پشتیبان ADM'),
+        h('div', { class: 'meta' }, 'توی ADM از منو، پشتیبان بگیر (فایل ADM.db). اینجا انتخابش کن تا بره توی Drive؛ دفعه‌ی بعد که کامپیوتر «آپدیت» کنه، دانلودهای گوشی وارد می‌شن.'),
+        h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn primary', onclick: () => admInput.click() }, 'انتخاب فایل ADM.db')),
+        admInput, admBar, admStatus)),
+    moreSection('notify', 'bell', 'اعلان قسمت جدید', notifyOn ? 'روشن' : 'خاموش', false,
       h('div', { class: 'meta' }, 'هر بار اپ رو باز کنی، پخش سریال‌ها بررسی می‌شه و اگه قسمت جدیدی اومده باشه خبرت می‌کنه.'),
       h('div', { class: 'row', style: 'margin-top:10px' }, h('button', { class: 'btn', onclick: toggleNotify }, notifyOn ? 'خاموش کردن اعلان' : 'روشن کردن اعلان'))),
-    h('div', { class: 'meta', style: 'text-align:center; margin-top:16px' }, `Lost Memories · نسخه‌ی ${VERSION}`));
+    moreSection('about', 'circle-help', 'درباره', `نسخه‌ی ${VERSION}`, false,
+      kv('نسخه‌ی اپ', VERSION),
+      PC_PREVIEW ? null : kv('نسخه‌ی پل', bv >= BRIDGE_WANTED ? `${fa(bv)} ✓` : bv ? `${fa(bv)} — قدیمیه؛ Code.gs رو دوباره دیپلوی کن` : '—'),
+      kv('کتابخونه', snap ? `${fa(shows.filter(s => !s.wish).length)} سریال · ${fa((snap.movies || []).length)} فیلم` : '—')));
 }
 
 async function toggleNotify() {
@@ -945,7 +1030,7 @@ $('#searchToggle').addEventListener('click', () => {
   if (open) setTimeout(() => $('#q').focus(), 60);
   else if ($('#q').value) { $('#q').value = ''; render(); }
 });
-$('#genreToggle').addEventListener('click', () => { setDrawer('genreDrawer', !$('#genreDrawer').classList.contains('open')); render(); });
+$('#filterToggle').addEventListener('click', () => { setDrawer('filterDrawer', !$('#filterDrawer').classList.contains('open')); render(); });
 document.addEventListener('keydown', e => {
   if (e.key === '/' && !/INPUT|TEXTAREA/.test(document.activeElement.tagName) && (view === 'shows' || view === 'movies')) {
     e.preventDefault(); setDrawer('searchDrawer', true); $('#q').focus();

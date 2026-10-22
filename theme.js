@@ -4,7 +4,7 @@
 (function () {
   const THEMES = [
     { id: 'amber', name: 'کهربایی', note: 'ابسیدین و طلایی', bg: '#090b10', panel: '#121620', a: '#f59e0b', b: '#fcd34d' },
-    { id: 'wine', name: 'شرابی', note: 'زرشکی و طلا', bg: '#0a0205', panel: '#1a0710', a: '#ff2a5f', b: '#f5a623' },
+    { id: 'wine', name: 'شرابی', note: 'زغالی و زرشکی ملایم', bg: '#0e0c0d', panel: '#201c1e', a: '#e6667e', b: '#d4a656' },
     { id: 'neon', name: 'نئون', note: 'زمردی و فیروزه‌ای', bg: '#06080c', panel: '#0d1117', a: '#00f5a0', b: '#00e5ff' },
     { id: 'volt', name: 'ولت', note: 'لیمویی و کبالتی', bg: '#050709', panel: '#111620', a: '#ccff00', b: '#2563eb' },
   ];
